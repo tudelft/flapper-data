@@ -9,7 +9,7 @@ axes_radius = 0.002
 marker_radius = 0.02
 line_radius = 0.007
 
-flight_exp = "flight_002"
+flight_exp = "flight_001"
 
 data_path = f"data/{flight_exp}/{flight_exp}_optitrack.csv"
 
@@ -17,21 +17,21 @@ data_path = f"data/{flight_exp}/{flight_exp}_optitrack.csv"
 # OptiTrack z,x,y --> x,y,z, remember to switch also for quaternions
 
 
-def mirror_point_through_plane(P, A, B, C):
-    # P: point to mirror (np.array([x, y, z]))
-    # A, B, C: three points on the plane (np.array([x, y, z]))
-    # Compute plane normal
-    AB = B - A
-    AC = C - A
-    n = np.cross(AB, AC)
-    n = n / np.linalg.norm(n)
-    # Compute vector from A to P
-    AP = P - A
-    # Distance from P to plane
-    d = np.dot(AP, n)
-    # Mirrored point
-    P_mirror = P - 2 * d * n
-    return P_mirror
+# def mirror_point_through_plane(P, A, B, C):
+#     # P: point to mirror (np.array([x, y, z]))
+#     # A, B, C: three points on the plane (np.array([x, y, z]))
+#     # Compute plane normal
+#     AB = B - A
+#     AC = C - A
+#     n = np.cross(AB, AC)
+#     n = n / np.linalg.norm(n)
+#     # Compute vector from A to P
+#     AP = P - A
+#     # Distance from P to plane
+#     d = np.dot(AP, n)
+#     # Mirrored point
+#     P_mirror = P - 2 * d * n
+#     return P_mirror
 
 
 blueprint = rrb.Blueprint(
@@ -39,6 +39,10 @@ blueprint = rrb.Blueprint(
         rrb.Spatial3DView(
             origin="/flapper/",
             name="flapper",
+        ),
+        rrb.TimeSeriesView(
+            origin="/dihedral/",
+            name="dihedral",
         ),
     ),
     collapse_panels=False,
@@ -166,7 +170,7 @@ def log_body_axes(df, i, axes_radius):
             df["fbqy"].iloc[i],
             df["fbqw"].iloc[i],
         ]
-    ) # z, x, y for ForwardLeftUp reference frame
+    )  # z, x, y for ForwardLeftUp reference frame
 
     r = scipy.spatial.transform.Rotation.from_quat(quat, scalar_first=False)
     r = r.apply(np.eye(3))
@@ -175,11 +179,53 @@ def log_body_axes(df, i, axes_radius):
         "/flapper/axes",
         rr.Arrows3D(
             origins=origin,
-            vectors=r*0.5,
+            vectors=r * 0.5,
             radii=axes_radius,
             colors=[[0, 255, 0], [255, 0, 0], [0, 0, 255]],
         ),
     )
+
+
+def log_dihedral(df, i):
+    body = np.array([df["fbz"].iloc[i], df["fbx"].iloc[i], df["fby"].iloc[i]])
+    top_marker = np.array([df["fb1z"].iloc[i], df["fb1x"].iloc[i], df["fb1y"].iloc[i]])
+    wing_rootR = np.array(
+        [df["fbrwz"].iloc[i], df["fbrwx"].iloc[i], df["fbrwy"].iloc[i]]
+    )
+    quat_body = np.array(
+        [
+            df["fbqz"].iloc[i],
+            df["fbqx"].iloc[i],
+            df["fbqy"].iloc[i],
+            df["fbqw"].iloc[i],
+        ]
+    )
+
+    # Body belonging vector
+    r_body = scipy.spatial.transform.Rotation.from_quat(quat_body, scalar_first=False)
+    forward_body = r_body.apply([0, 1, 0])  # Forward facing vector
+
+    # Wing orientation belonging vector
+    BA = body - top_marker
+    BC = wing_rootR - body
+
+    norm_dihedral = np.cross(BA, BC)
+
+    # Define negative dihedral for forward pitch
+    if np.cross(forward_body, norm_dihedral)[2] >= 0:
+        dihedral = - np.arcsin(
+            np.linalg.norm(np.cross(forward_body, norm_dihedral))
+            / (np.linalg.norm(forward_body) * np.linalg.norm(norm_dihedral))
+        )
+    else:
+        dihedral = np.arcsin(
+            np.linalg.norm(np.cross(forward_body, norm_dihedral))
+            / (np.linalg.norm(forward_body) * np.linalg.norm(norm_dihedral))
+        )
+        
+    offset = 10.3 # deg
+
+    rr.log("dihedral/dihedral", rr.Scalars(np.rad2deg(dihedral)- offset))
 
 
 if __name__ == "__main__":
@@ -263,3 +309,4 @@ if __name__ == "__main__":
         log_wing_strips(df, i, "right", line_radius)
         log_wing_strips(df, i, "left", line_radius)
         log_body_axes(df, i, axes_radius)
+        log_dihedral(df, i)
