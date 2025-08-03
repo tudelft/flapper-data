@@ -4,12 +4,12 @@ from scipy.spatial.transform import Rotation as R
 
 # OptiTrack z,x,y --> x,y,z, switch also for quaternions
 
-# Declare the flight number
+# Select the flight number
 flight_n = "flight_001"
 data_path = f"data/{flight_n}/{flight_n}_optitrack.csv"
 
 
-def orient_data(data, frame):
+def orient_data(data, reference_frame):
     """
     Orients the optitrack data to the correct body orientation. Optitrack defines body axes
     as RightForwardUp respectively for x, y, z. Thus use a Euler intrinsic rotation, 'yxz',
@@ -26,12 +26,13 @@ def orient_data(data, frame):
 
     Returns:
     --------
-        processed_data
-
+        oriented_data: pandas.DataFrame
+            DataFrame containing 6 columns, ['x', 'y', 'z', 'roll', 'pitch', 'yaw'],
+            angles are in radians.
     """
 
     # For now process only the body data
-    if frame == "ForwardLeftUp":
+    if reference_frame == "ForwardLeftUp":
         x = list(data["fbz"])
         y = list(data["fbx"])
         z = list(data["fby"])
@@ -44,7 +45,7 @@ def orient_data(data, frame):
         pitch = -euler_angles[:, 1]  # Due to moving the axis from right to left
         yaw = euler_angles[:, 2]
 
-    elif frame == "ForwardRightDown":
+    elif reference_frame == "ForwardRightDown":
         x = list(data["fbz"])
         y = list(-data["fbx"])
         z = list(-data["fby"])
@@ -61,11 +62,38 @@ def orient_data(data, frame):
             "Reference frame not recognised, use ForwardLeftUp or ForwardRightDown (aerospace standard)"
         )
 
-    processed_data = pd.DataFrame(
+    oriented_data = pd.DataFrame(
         {"x": x, "y": y, "z": z, "roll": roll, "pitch": pitch, "yaw": yaw}
     )
 
-    return processed_data
+    return oriented_data
+
+
+def handle_nan(data, frame_rate: int, time_limit: int):
+    """
+    Handles the NaN or missing values in the OptiTrack .csv file using
+    cubic interpolation across each recorded variable.
+
+    Parameters:
+    -----------
+        data: pandas.DataFrame
+            DataFrame containing the raw OptiTrack data
+        frame_rate: int
+            Frame rate at which the OptiTrack captured data
+        time_limit: int
+            Limit in seconds of maximum allowed gap between missing logs
+
+    Returns:
+    --------
+        interpolated_data: pandas.DataFrame
+            Data with interpolated values and removed NaNs
+    """
+
+    frame_limit = int(frame_rate / time_limit)
+
+    interpolated_data = data.interpolate(method="cubic", axis=0, limit=frame_limit)
+
+    return interpolated_data
 
 
 if __name__ == "__main__":
@@ -135,7 +163,7 @@ if __name__ == "__main__":
         usecols=range(1, len(names) + 1),
         names=names,
         header=None,
-    ).iloc[60:1000, :]
+    ).iloc[:, :]
 
+    handle_nan(data, 100, 2)
     orient_data(data, "ForwardLeftUp")
-    print(orient_data.__doc__)
