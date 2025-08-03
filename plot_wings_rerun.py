@@ -2,19 +2,19 @@ import pandas as pd
 import rerun as rr
 import rerun.blueprint as rrb
 import numpy as np
-import scipy.spatial.transform
+from scipy.spatial.transform import Rotation as R
 
 wing_body_distance = 0.073
 axes_radius = 0.002
 marker_radius = 0.02
 line_radius = 0.007
 
-flight_exp = "flight_001"
+flight_exp = "flight_002"
 
 data_path = f"data/{flight_exp}/{flight_exp}_optitrack.csv"
 
 # Frame definition: x forward, y left, z up
-# OptiTrack z,x,y --> x,y,z, remember to switch also for quaternions
+# OptiTrack z,x,y --> x,y,z, switch also for quaternions
 
 
 # def mirror_point_through_plane(P, A, B, C):
@@ -43,6 +43,11 @@ blueprint = rrb.Blueprint(
         rrb.TimeSeriesView(
             origin="/dihedral/",
             name="dihedral",
+        ),
+        rrb.TimeSeriesView(
+            origin="/rotations/",
+            name="rotations",
+            visible=False
         ),
     ),
     collapse_panels=False,
@@ -171,8 +176,7 @@ def log_body_axes(df, i, axes_radius):
             df["fbqw"].iloc[i],
         ]
     )  # z, x, y for ForwardLeftUp reference frame
-
-    r = scipy.spatial.transform.Rotation.from_quat(quat, scalar_first=False)
+    r = R.from_quat(quat)
     r = r.apply(np.eye(3))
 
     rr.log(
@@ -181,7 +185,7 @@ def log_body_axes(df, i, axes_radius):
             origins=origin,
             vectors=r * 0.5,
             radii=axes_radius,
-            colors=[[0, 255, 0], [255, 0, 0], [0, 0, 255]],
+            colors=[[255, 0, 0], [0, 255, 0], [0, 0, 255]],
         ),
     )
 
@@ -202,7 +206,7 @@ def log_dihedral(df, i):
     )
 
     # Body belonging vector
-    r_body = scipy.spatial.transform.Rotation.from_quat(quat_body, scalar_first=False)
+    r_body = R.from_quat(quat_body, scalar_first=False)
     forward_body = r_body.apply([0, 1, 0])  # Forward facing vector
 
     # Wing orientation belonging vector
@@ -213,7 +217,7 @@ def log_dihedral(df, i):
 
     # Define negative dihedral for forward pitch
     if np.cross(forward_body, norm_dihedral)[2] >= 0:
-        dihedral = - np.arcsin(
+        dihedral = -np.arcsin(
             np.linalg.norm(np.cross(forward_body, norm_dihedral))
             / (np.linalg.norm(forward_body) * np.linalg.norm(norm_dihedral))
         )
@@ -222,10 +226,34 @@ def log_dihedral(df, i):
             np.linalg.norm(np.cross(forward_body, norm_dihedral))
             / (np.linalg.norm(forward_body) * np.linalg.norm(norm_dihedral))
         )
-        
-    offset = 10.3 # deg
 
-    rr.log("dihedral/dihedral", rr.Scalars(np.rad2deg(dihedral)- offset))
+    offset = 10.3  # deg
+
+    rr.log("dihedral/dihedral", rr.Scalars(np.rad2deg(dihedral) - offset))
+
+
+def log_body_rotations(df, i):
+    quat = np.array(
+        [
+            df["fbqz"].iloc[i],
+            df["fbqx"].iloc[i],
+            df["fbqy"].iloc[i],
+            df["fbqw"].iloc[i],
+        ]
+    )  # z, x, y for ForwardLeftUp reference frame
+
+    # OptiTrack defines RightForwardUp respectively for x, y, z
+
+    r = R.from_quat(quat)
+    euler_angles = r.as_euler("yxz")
+
+    roll = euler_angles[0]
+    pitch = -euler_angles[1]
+    yaw = euler_angles[2]
+
+    rr.log("/rotations/pitch", rr.Scalars(pitch))
+    rr.log("/rotations/roll", rr.Scalars(roll))
+    rr.log("/rotations/yaw", rr.Scalars(yaw))
 
 
 if __name__ == "__main__":
@@ -295,7 +323,7 @@ if __name__ == "__main__":
         header=None,
     )
 
-    df = df.iloc[60:2000, :]
+    df = df.iloc[60:8000, :]
 
     rr.init("rerun_flapper", spawn=True)
     rr.send_blueprint(blueprint)
@@ -310,3 +338,5 @@ if __name__ == "__main__":
         log_wing_strips(df, i, "left", line_radius)
         log_body_axes(df, i, axes_radius)
         log_dihedral(df, i)
+
+        log_body_rotations(df, i)
