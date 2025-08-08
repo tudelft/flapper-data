@@ -22,7 +22,7 @@ TODO:
 
 # Select the flight number
 flight_exp = "flight_001"
-onboard_freq = 512  # Hz
+onboard_freq = 500  # Hz
 filter_cutoff_freq = 3  # Hz
 g0 = 9.80665  # m/s
 
