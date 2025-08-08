@@ -4,6 +4,10 @@ import rerun.blueprint as rrb
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 
+# Local imports
+from process_data import process_optitrack, handle_nan, filter_data
+
+
 wing_body_distance = 0.073
 axes_radius = 0.002
 marker_radius = 0.02
@@ -40,15 +44,8 @@ blueprint = rrb.Blueprint(
             origin="/flapper/",
             name="flapper",
         ),
-        rrb.TimeSeriesView(
-            origin="/dihedral/",
-            name="dihedral",
-        ),
-        rrb.TimeSeriesView(
-            origin="/rotations/",
-            name="rotations",
-            visible=False
-        ),
+        rrb.TimeSeriesView(origin="/dihedral/", name="dihedral", visible=False),
+        rrb.TimeSeriesView(origin="/rotations/", name="rotations", visible=False),
     ),
     collapse_panels=False,
 )
@@ -193,9 +190,7 @@ def log_body_axes(df, i, axes_radius):
 def log_dihedral(df, i):
     body = np.array([df["fbz"].iloc[i], df["fbx"].iloc[i], df["fby"].iloc[i]])
     top_marker = np.array([df["fb1z"].iloc[i], df["fb1x"].iloc[i], df["fb1y"].iloc[i]])
-    wing_rootR = np.array(
-        [df["fbrwz"].iloc[i], df["fbrwx"].iloc[i], df["fbrwy"].iloc[i]]
-    )
+    wing_rootR = np.array([df["fbrwz"].iloc[i], df["fbrwx"].iloc[i], df["fbrwy"].iloc[i]])
     quat_body = np.array(
         [
             df["fbqz"].iloc[i],
@@ -217,43 +212,13 @@ def log_dihedral(df, i):
 
     # Define negative dihedral for forward pitch
     if np.cross(forward_body, norm_dihedral)[2] >= 0:
-        dihedral = -np.arcsin(
-            np.linalg.norm(np.cross(forward_body, norm_dihedral))
-            / (np.linalg.norm(forward_body) * np.linalg.norm(norm_dihedral))
-        )
+        dihedral = -np.arcsin(np.linalg.norm(np.cross(forward_body, norm_dihedral)) / (np.linalg.norm(forward_body) * np.linalg.norm(norm_dihedral)))
     else:
-        dihedral = np.arcsin(
-            np.linalg.norm(np.cross(forward_body, norm_dihedral))
-            / (np.linalg.norm(forward_body) * np.linalg.norm(norm_dihedral))
-        )
+        dihedral = np.arcsin(np.linalg.norm(np.cross(forward_body, norm_dihedral)) / (np.linalg.norm(forward_body) * np.linalg.norm(norm_dihedral)))
 
     offset = 10.3  # deg
 
     rr.log("dihedral/dihedral", rr.Scalars(np.rad2deg(dihedral) - offset))
-
-
-def log_body_rotations(df, i):
-    quat = np.array(
-        [
-            df["fbqz"].iloc[i],
-            df["fbqx"].iloc[i],
-            df["fbqy"].iloc[i],
-            df["fbqw"].iloc[i],
-        ]
-    )  # z, x, y for ForwardLeftUp reference frame
-
-    # OptiTrack defines RightForwardUp respectively for x, y, z
-
-    r = R.from_quat(quat)
-    euler_angles = r.as_euler("yxz")
-
-    roll = euler_angles[0]
-    pitch = -euler_angles[1]
-    yaw = euler_angles[2]
-
-    rr.log("/rotations/pitch", rr.Scalars(pitch))
-    rr.log("/rotations/roll", rr.Scalars(roll))
-    rr.log("/rotations/yaw", rr.Scalars(yaw))
 
 
 if __name__ == "__main__":
@@ -322,11 +287,14 @@ if __name__ == "__main__":
         names=names,
         header=None,
     )
-
-    df = df.iloc[60:8000, :]
+    df = df.iloc[0:7500, :]
 
     rr.init("rerun_flapper", spawn=True)
     rr.send_blueprint(blueprint)
+
+    df = handle_nan(df, 100, 2)
+    filtered_optitrack = filter_data(df, 8, 100)
+    processed_optitrack = process_optitrack(filtered_optitrack, "ForwardRightDown", [0, 0, 0.6])
 
     for i in range(len(df)):
         rr.set_time("time", timestamp=df["time"].iloc[i])
@@ -339,4 +307,7 @@ if __name__ == "__main__":
         log_body_axes(df, i, axes_radius)
         log_dihedral(df, i)
 
-        log_body_rotations(df, i)
+
+        rr.log("/rotations/pitch", rr.Scalars(processed_optitrack["pitch"].loc[i]))
+        rr.log("/rotations/roll", rr.Scalars(processed_optitrack["roll"].loc[i]))
+        rr.log("/rotations/yaw", rr.Scalars(processed_optitrack["yaw"].loc[i]))
