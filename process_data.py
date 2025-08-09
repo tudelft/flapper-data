@@ -15,20 +15,20 @@ TODO:
     - Handle column names in a different manner
     - log flapping frequency
     - log dihedral
-    - shift to CoM instead of geometric body
 """
 
-# OptiTrack z,x,y --> x,y,z, switch also for quaternions
+# OptiTrack z,x,y --> x,y,z
 
 # Select the flight number
 flight_exp = "flight_001"
 onboard_freq = 500  # Hz
-filter_cutoff_freq = 3  # Hz
+filter_cutoff_freq = 2  # Hz
 g0 = 9.80665  # m/s
 
-columns_sync = ["roll_rate"]
+# Columns to use to sync the optitrack and IMU data
+columns_sync = ["pitch_rate"]
 
-body_to_CoM = np.array([0, 0, 0]) # Not yet implemented
+body_to_CoM = np.array([0, 0, -0.20])  # Not yet implemented
 
 
 def get_optitrack_meta(optitrack_csv):
@@ -95,7 +95,7 @@ def filter_data(data, cutoff_freq, sampling_freq):
     """
     columns_name = data.columns
 
-    b, a = signal.butter(4, cutoff_freq, fs=sampling_freq)  # type: ignore
+    b, a = signal.butter(2, cutoff_freq, fs=sampling_freq)  # type: ignore
 
     filtered_data = signal.filtfilt(b, a, data.iloc[:, 1:], axis=0)
 
@@ -108,7 +108,7 @@ def filter_data(data, cutoff_freq, sampling_freq):
     return filtered_df
 
 
-def process_optitrack(data, reference_frame, body_to_CoM):
+def process_optitrack(data, reference_frame, com_body):
     """
     Orients the optitrack data to the correct body orientation. Optitrack defines body axes
     as RightForwardUp respectively for x, y, z. Thus use a Euler intrinsic rotation, 'yxz',
@@ -118,10 +118,12 @@ def process_optitrack(data, reference_frame, body_to_CoM):
     -----------
         data : pandas.DataFrame
             DataFrame containing the raw OptiTrack data
-        frame : str
+        reference_frame : str
             Defines the orientation the data is processed to.
             Can be either "ForwardLeftUp" or "ForwardRightDown" as from aerospace convention,
             indicating respectively x, y, z.
+        com_body: numpy.array # (3,)
+            Position of the center of mass with respect to the optitrack defined geometric center in the body frame.
 
     Returns:
     --------
@@ -132,7 +134,7 @@ def process_optitrack(data, reference_frame, body_to_CoM):
 
     # For now process only the body data
     if reference_frame == "ForwardRightDown":
-        # Rotational kinematics
+        # Rotational kinematics: check: correct
         quats = np.vstack((data["fbqx"], data["fbqy"], data["fbqz"], data["fbqw"])).T
 
         r = R.from_quat(quats, scalar_first=False)
@@ -142,28 +144,80 @@ def process_optitrack(data, reference_frame, body_to_CoM):
 
         # First extract yaw, pitch and then roll
         psi, theta, phi = -euler_angles[:, 0], euler_angles[:, 1], euler_angles[:, 2]
-        
+
+        # Euler rates by taking the derivative of euler angles
         phi_rate = np.gradient(phi, data["time"])
         theta_rate = np.gradient(theta, data["time"])
         psi_rate = np.gradient(psi, data["time"])
-        euler_rates = np.asarray([phi_rate, theta_rate, psi_rate]) # (3, N)
-        
-        
+        euler_rates = np.asarray([phi_rate, theta_rate, psi_rate])  # (3, N)
+
         rotations_rates = np.array(
-            [[np.ones_like(theta), np.zeros_like(theta), -np.sin(theta)], 
-             [np.zeros_like(theta), np.cos(phi), np.sin(phi) * np.cos(theta)], 
-             [np.zeros_like(theta), -np.sin(phi), np.cos(phi) * np.cos(theta)]]
-        ) # (3, 3, N)
+            [
+                [np.ones_like(theta), np.zeros_like(theta), -np.sin(theta)],
+                [np.zeros_like(theta), np.cos(phi), np.sin(phi) * np.cos(theta)],
+                [np.zeros_like(theta), -np.sin(phi), np.cos(phi) * np.cos(theta)],
+            ]
+        )  # (3, 3, N)
+
+        # Body rates found from the rotation matrix above
+        roll_rate, pitch_rate, yaw_rate = np.einsum("ijk,jk->ik", rotations_rates, euler_rates)  # (N,),    (N,),       (N,)
+
+        rates_body_wrt_ref = np.asarray([roll_rate, pitch_rate, yaw_rate]) # (3, N)
+
+        roll_acc = np.gradient(roll_rate, data["time"])
+        pitch_acc = np.gradient(pitch_rate, data["time"])
+        yaw_acc = np.gradient(yaw_rate, data["time"])
         
-        roll_rate, pitch_rate, yaw_rate = np.einsum('ijk,jk->ik', rotations_rates, euler_rates)
-        
+        alpha_body_wrt_ref = np.asarray([roll_acc, pitch_acc, yaw_acc]) # (3, N)
         
         # Now move onto translational kinematics
+        # Position of the geometric center in global frame
+        x_ref = np.array(data["fbx"])
+        y_ref = np.array(data["fbz"])
+        z_ref = np.array(-data["fby"])
+        pos_ref = np.asarray([x_ref, y_ref, z_ref])  # (3, N)
+
+        # Velocities of the geometric center in refal frame
+        vel_x_ref = np.gradient(x_ref, data["time"])
+        vel_y_ref = np.gradient(y_ref, data["time"])
+        vel_z_ref = np.gradient(z_ref, data["time"])
+        vel_ref = np.asarray([vel_x_ref, vel_y_ref, vel_z_ref])  # (3, N)
+
+        # Acceleration of the geometric center in refal frame
+        acc_x_ref = np.gradient(vel_x_ref, data["time"])
+        acc_y_ref = np.gradient(vel_y_ref, data["time"])
+        acc_z_ref = np.gradient(vel_z_ref, data["time"])
+        acc_ref = np.asarray([acc_x_ref, acc_y_ref, acc_z_ref])  # (3, N)
+
+        # Position of the CoM in refal frame
+        pos_com_ref = pos_ref + com_body[:, np.newaxis]  # reshape com_body to (3, N)
         
-        x_glob = np.array(data["fbx"])
-        y_glob = np.array(data["fbz"])
-        z_glob = np.array(-data["fby"])
+        vel_com_ref = vel_ref + np.cross(rates_body_wrt_ref.T, com_body.ravel()).T
+
+        acc_com_ref = acc_ref + np.cross(alpha_body_wrt_ref.T, com_body.ravel()).T + np.cross(rates_body_wrt_ref.T, np.cross(rates_body_wrt_ref.T, com_body.ravel())).T
+
+        # Rotations matrix from body frame to global frame
+        rotations_BodyToRef = np.array(
+            [
+                [np.cos(theta) * np.cos(psi), np.cos(theta) * np.sin(psi), -np.sin(theta)],
+                [
+                    (-np.cos(phi) * np.sin(psi) + np.sin(phi) * np.sin(theta) * np.cos(psi)),
+                    (np.cos(phi) * np.cos(psi) + np.sin(phi) * np.sin(theta) * np.sin(psi)),
+                    np.sin(phi) * np.cos(theta),
+                ],
+                [
+                    (np.sin(phi) * np.sin(psi) + np.cos(phi) * np.sin(theta) * np.cos(psi)),
+                    (-np.sin(phi) * np.cos(psi) + np.cos(phi) * np.sin(theta) * np.sin(psi)),
+                    np.cos(phi) * np.cos(theta),
+                ],
+            ]
+        )
         
+        
+        velx_com_body, vely_com_body, velz_com_body = np.einsum("ijk,jk->ik", rotations_BodyToRef.transpose(1, 0, 2), vel_com_ref)
+        
+        accx_com_body, accy_com_body, accz_com_body = np.einsum("ijk,jk->ik", rotations_BodyToRef.transpose(1, 0, 2), acc_com_ref)
+
     else:
         print("Reference frame not recognised, use 'ForwardLeftUp' or 'ForwardRightDown' (aerospace standard)")
 
@@ -176,6 +230,9 @@ def process_optitrack(data, reference_frame, body_to_CoM):
             "roll_rate": roll_rate,
             "pitch_rate": pitch_rate,
             "yaw_rate": yaw_rate,
+            "accx": accx_com_body,
+            "accy": accy_com_body,
+            "accz": accz_com_body
         }
     )
 
@@ -183,16 +240,22 @@ def process_optitrack(data, reference_frame, body_to_CoM):
 
 
 def process_onboard(data, reference_frame):
-    
     if reference_frame == "ForwardRightDown":
         # Using reference frame Forward, Right, Down
-        pitch_rate = np.radians(-data["gyro.y"])
+
+        # IMU uses x forward, y to the left, z up
         roll_rate = np.radians(data["gyro.x"])
+        pitch_rate = np.radians(-data["gyro.y"])
         yaw_rate = np.radians(-data["gyro.z"])
-        
+
         roll_alpha = np.gradient(roll_rate, data["time"])
         pitch_alpha = np.gradient(pitch_rate, data["time"])
         yaw_alpha = np.gradient(yaw_rate, data["time"])
+
+        acc_x = data["acc.x"]*g0
+        acc_y = -data["acc.y"]*g0
+        acc_z = (-data["acc.z"] + 1)*g0
+
     else:
         print("Reference frame not recognised, use 'ForwardLeftUp' or 'ForwardRightDown' (aerospace standard)")
 
@@ -205,6 +268,9 @@ def process_onboard(data, reference_frame):
             "roll_alpha": roll_alpha,
             "pitch_alpha": pitch_alpha,
             "yaw_alpha": yaw_alpha,
+            "accx":acc_x,
+            "accy": acc_y,
+            "accz": acc_z
         }
     )
 
@@ -312,10 +378,10 @@ if __name__ == "__main__":
     # Handle NaNs in both dataframes
     optitrack_data = handle_nan(optitrack_data, optitrack_fps, 2)
     onboard_data = handle_nan(onboard_data, onboard_freq, 2)
-    
+
     # Filter the onboard data
     onboard_filtered = filter_data(onboard_data, filter_cutoff_freq, onboard_freq)
-    
+
     # Filter the optitrack data
     optitrack_filtered = filter_data(optitrack_data, filter_cutoff_freq, optitrack_fps)
 
@@ -330,10 +396,12 @@ if __name__ == "__main__":
     # Match the data
     lag = sync_timestamps(onboard_processed, optitrack_processed, columns_sync)
 
+    # Shift the optitrack data
     optitrack_processed = shift_data(optitrack_processed, lag, optitrack_fps)
 
-    plt.plot(onboard_processed["time"], onboard_processed["roll_rate"], label="onboard")
-    plt.plot(optitrack_processed["time"], optitrack_processed["roll_rate"], label="optitrack")
+    # Plot for testing pusposes
+    plt.plot(onboard_processed["time"], onboard_processed["pitch_rate"], label="onboard")
+    plt.plot(optitrack_processed["time"], optitrack_processed["pitch_rate"], label="optitrack")
     plt.ylim(-4, 4)
     plt.legend()
     plt.show()
