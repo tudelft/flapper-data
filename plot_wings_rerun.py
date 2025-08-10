@@ -294,7 +294,7 @@ if __name__ == "__main__":
 
     df = handle_nan(df, 100, 2)
     filtered_optitrack = filter_data(df, 8, 100)
-    processed_optitrack = process_optitrack(filtered_optitrack, "ForwardRightDown", [0, 0, 0.6])
+    processed_optitrack = process_optitrack(filtered_optitrack, "ForwardRightDown", np.array([0, 0, 0.6]))
 
     for i in range(len(df)):
         rr.set_time("time", timestamp=df["time"].iloc[i])
