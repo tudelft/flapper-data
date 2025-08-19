@@ -15,6 +15,7 @@ TODO:
     - Handle column names in a different manner
     - log flapping frequency
     - log dihedral
+    - fix accelerations handling on imu
 """
 
 # OptiTrack z,x,y --> x,y,z
@@ -162,14 +163,14 @@ def process_optitrack(data, reference_frame, com_body):
         # Body rates found from the rotation matrix above
         roll_rate, pitch_rate, yaw_rate = np.einsum("ijk,jk->ik", rotations_rates, euler_rates)  # (N,),    (N,),       (N,)
 
-        rates_body_wrt_ref = np.asarray([roll_rate, pitch_rate, yaw_rate]) # (3, N)
+        rates_body_wrt_ref = np.asarray([roll_rate, pitch_rate, yaw_rate])  # (3, N)
 
         roll_acc = np.gradient(roll_rate, data["time"])
         pitch_acc = np.gradient(pitch_rate, data["time"])
         yaw_acc = np.gradient(yaw_rate, data["time"])
-        
-        alpha_body_wrt_ref = np.asarray([roll_acc, pitch_acc, yaw_acc]) # (3, N)
-        
+
+        alpha_body_wrt_ref = np.asarray([roll_acc, pitch_acc, yaw_acc])  # (3, N)
+
         # Now move onto translational kinematics
         # Position of the geometric center in global frame
         x_ref = np.array(data["fbx"])
@@ -191,7 +192,7 @@ def process_optitrack(data, reference_frame, com_body):
 
         # Position of the CoM in refal frame
         pos_com_ref = pos_ref + com_body[:, np.newaxis]  # reshape com_body to (3, N)
-        
+
         vel_com_ref = vel_ref + np.cross(rates_body_wrt_ref.T, com_body.ravel()).T
 
         acc_com_ref = acc_ref + np.cross(alpha_body_wrt_ref.T, com_body.ravel()).T + np.cross(rates_body_wrt_ref.T, np.cross(rates_body_wrt_ref.T, com_body.ravel())).T
@@ -199,7 +200,11 @@ def process_optitrack(data, reference_frame, com_body):
         # Rotations matrix from body frame to global frame
         rotations_BodyToRef = np.array(
             [
-                [np.cos(theta) * np.cos(psi), np.cos(theta) * np.sin(psi), -np.sin(theta)],
+                [
+                    np.cos(theta) * np.cos(psi),
+                    np.cos(theta) * np.sin(psi),
+                    -np.sin(theta),
+                ],
                 [
                     (-np.cos(phi) * np.sin(psi) + np.sin(phi) * np.sin(theta) * np.cos(psi)),
                     (np.cos(phi) * np.cos(psi) + np.sin(phi) * np.sin(theta) * np.sin(psi)),
@@ -212,10 +217,9 @@ def process_optitrack(data, reference_frame, com_body):
                 ],
             ]
         )
-        
-        
+
         velx_com_body, vely_com_body, velz_com_body = np.einsum("ijk,jk->ik", rotations_BodyToRef.transpose(1, 0, 2), vel_com_ref)
-        
+
         accx_com_body, accy_com_body, accz_com_body = np.einsum("ijk,jk->ik", rotations_BodyToRef.transpose(1, 0, 2), acc_com_ref)
 
     else:
@@ -232,7 +236,7 @@ def process_optitrack(data, reference_frame, com_body):
             "yaw_rate": yaw_rate,
             "accx": accx_com_body,
             "accy": accy_com_body,
-            "accz": accz_com_body
+            "accz": accz_com_body,
         }
     )
 
@@ -248,13 +252,15 @@ def process_onboard(data, reference_frame):
         pitch_rate = np.radians(-data["gyro.y"])
         yaw_rate = np.radians(-data["gyro.z"])
 
+        pitch = integrate.cumulative_trapezoid(pitch_rate, data["time"], initial=0)
+
         roll_alpha = np.gradient(roll_rate, data["time"])
         pitch_alpha = np.gradient(pitch_rate, data["time"])
         yaw_alpha = np.gradient(yaw_rate, data["time"])
 
-        acc_x = data["acc.x"]*g0
-        acc_y = -data["acc.y"]*g0
-        acc_z = (-data["acc.z"] + 1)*g0
+        acc_x = data["acc.x"] * g0
+        acc_y = -data["acc.y"] * g0
+        acc_z = (-data["acc.z"] + 1) * g0
 
     else:
         print("Reference frame not recognised, use 'ForwardLeftUp' or 'ForwardRightDown' (aerospace standard)")
@@ -262,15 +268,22 @@ def process_onboard(data, reference_frame):
     processed_data = pd.DataFrame(
         {
             "time": data["time"],
+            "controller.pitch": np.radians(data["controller.pitch"]),
+            "controller.roll": np.radians(data["controller.roll"]),
+            "controller.yaw": np.radians(data["controller.yaw"]),
+            "controller.pitchrate": np.radians(data["controller.pitchRate"]),
+            "controller.rollrate": np.radians(data["controller.rollRate"]),
+            "controller.yawrate": np.radians(data["controller.yawRate"]),
+            "pitch": pitch,
             "roll_rate": roll_rate,
             "pitch_rate": pitch_rate,
             "yaw_rate": yaw_rate,
             "roll_alpha": roll_alpha,
             "pitch_alpha": pitch_alpha,
             "yaw_alpha": yaw_alpha,
-            "accx":acc_x,
+            "accx": acc_x,
             "accy": acc_y,
-            "accz": acc_z
+            "accz": acc_z,
         }
     )
 
@@ -291,7 +304,10 @@ def sync_timestamps(onboard, optitrack, columns_sync):
 def shift_data(data, lag, sampling_freq):
     time_shift = lag / sampling_freq
 
-    data["time"] = np.round(np.linspace(time_shift, data["time"].iloc[-1] + time_shift, len(data["time"])), 2)
+    data["time"] = np.round(
+        np.linspace(time_shift, data["time"].iloc[-1] + time_shift, len(data["time"])),
+        2,
+    )
 
     return data
 
@@ -369,7 +385,7 @@ if __name__ == "__main__":
         header=None,
     )
 
-    onboard_data = pd.read_csv(onboard_csv, usecols=lambda col: col != "timestamp")
+    onboard_data = pd.read_csv(onboard_csv)
 
     optitrack_meta = get_optitrack_meta(optitrack_csv)
 
@@ -381,7 +397,6 @@ if __name__ == "__main__":
 
     # Filter the onboard data
     onboard_filtered = filter_data(onboard_data, filter_cutoff_freq, onboard_freq)
-
     # Filter the optitrack data
     optitrack_filtered = filter_data(optitrack_data, filter_cutoff_freq, optitrack_fps)
 
@@ -401,7 +416,10 @@ if __name__ == "__main__":
 
     # Plot for testing pusposes
     plt.plot(onboard_processed["time"], onboard_processed["pitch_rate"], label="onboard")
-    plt.plot(optitrack_processed["time"], optitrack_processed["pitch_rate"], label="optitrack")
+    plt.plot(
+        optitrack_processed["time"],
+        optitrack_processed["pitch_rate"],
+        label="optitrack",
+    )
     plt.ylim(-4, 4)
-    plt.legend()
-    plt.show()
+    plt.savefig("output.png")
