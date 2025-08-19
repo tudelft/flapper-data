@@ -234,6 +234,9 @@ def process_optitrack(data, reference_frame, com_body):
             "roll_rate": roll_rate,
             "pitch_rate": pitch_rate,
             "yaw_rate": yaw_rate,
+            "roll_acc":roll_acc, 
+            "pitch_acc":pitch_acc, 
+            "yaw_acc":yaw_acc, 
             "accx": accx_com_body,
             "accy": accy_com_body,
             "accz": accz_com_body,
@@ -252,11 +255,9 @@ def process_onboard(data, reference_frame):
         pitch_rate = np.radians(-data["gyro.y"])
         yaw_rate = np.radians(-data["gyro.z"])
 
-        pitch = integrate.cumulative_trapezoid(pitch_rate, data["time"], initial=0)
-
-        roll_alpha = np.gradient(roll_rate, data["time"])
-        pitch_alpha = np.gradient(pitch_rate, data["time"])
-        yaw_alpha = np.gradient(yaw_rate, data["time"])
+        roll_acc = np.gradient(roll_rate, data["time"])
+        pitch_acc = np.gradient(pitch_rate, data["time"])
+        yaw_acc = np.gradient(yaw_rate, data["time"])
 
         acc_x = data["acc.x"] * g0
         acc_y = -data["acc.y"] * g0
@@ -274,13 +275,12 @@ def process_onboard(data, reference_frame):
             "controller.pitchrate": np.radians(data["controller.pitchRate"]),
             "controller.rollrate": np.radians(data["controller.rollRate"]),
             "controller.yawrate": np.radians(data["controller.yawRate"]),
-            "pitch": pitch,
             "roll_rate": roll_rate,
             "pitch_rate": pitch_rate,
             "yaw_rate": yaw_rate,
-            "roll_alpha": roll_alpha,
-            "pitch_alpha": pitch_alpha,
-            "yaw_alpha": yaw_alpha,
+            "roll_acc": roll_acc,
+            "pitch_acc": pitch_acc,
+            "yaw_acc": yaw_acc,
             "accx": acc_x,
             "accy": acc_y,
             "accz": acc_z,
@@ -311,11 +311,21 @@ def shift_data(data, lag, sampling_freq):
 
     return data
 
+# Save everything in radians
+def merge_dfs(onboard, optitrack):
+    onboard = onboard.rename(columns={col: f"onboard.{col}" for col in onboard.columns if col != "time"})
+    optitrack = optitrack.rename(columns={col: f"optitrack.{col}" for col in optitrack.columns if col != "time"})
+
+    merged = pd.merge(onboard, optitrack, on="time", how="inner")
+
+    return merged
+
 
 if __name__ == "__main__":
     data_dir = f"data/{flight_exp}/{flight_exp}"
     optitrack_csv = f"{data_dir}_optitrack.csv"
     onboard_csv = f"{data_dir}_flapper.csv"
+    processed_file = f"{data_dir}_processed.csv" 
 
     # Give a name to the columns
     names = [
@@ -414,12 +424,9 @@ if __name__ == "__main__":
     # Shift the optitrack data
     optitrack_processed = shift_data(optitrack_processed, lag, optitrack_fps)
 
-    # Plot for testing pusposes
-    plt.plot(onboard_processed["time"], onboard_processed["pitch_rate"], label="onboard")
-    plt.plot(
-        optitrack_processed["time"],
-        optitrack_processed["pitch_rate"],
-        label="optitrack",
-    )
-    plt.ylim(-4, 4)
-    plt.savefig("output.png")
+    # Merge synced DataFrames
+    processed_merged = merge_dfs(onboard_processed, optitrack_processed)
+
+
+    # Save merged DataFrame
+    processed_merged.to_csv(processed_file)
