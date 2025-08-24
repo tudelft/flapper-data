@@ -3,8 +3,10 @@ import numpy as np
 from scipy.spatial.transform import Rotation as R
 from math import gcd
 from scipy import signal
-from scipy import integrate
 import matplotlib.pyplot as plt
+from utils.state_estimator import MahonyIMU
+
+
 
 """
 TODO:
@@ -246,18 +248,37 @@ def process_optitrack(data, reference_frame, com_body):
     return processed_data
 
 
-def process_onboard(data, reference_frame):
+def process_onboard(data, reference_frame, sampling_freq):
     if reference_frame == "ForwardRightDown":
         # Using reference frame Forward, Right, Down
 
+        time_array = np.round(np.linspace(0, data.shape[0] / sampling_freq, data.shape[0]), 2)
+
+        data.insert(0, "time", time_array)
+
+        estimator = MahonyIMU()
+
+        attitude = {"pitch": [], "roll":[], "yaw" : []}
         # IMU uses x forward, y to the left, z up
         roll_rate = np.radians(data["gyro.x"])
         pitch_rate = np.radians(-data["gyro.y"])
         yaw_rate = np.radians(-data["gyro.z"])
 
-        roll_acc = np.gradient(roll_rate, data["time"])
-        pitch_acc = np.gradient(pitch_rate, data["time"])
-        yaw_acc = np.gradient(yaw_rate, data["time"])
+        for i in range(len(data)):
+            gx_i, gy_i, gz_i, = data.loc[i, ["gyro.x", "gyro.y" ,"gyro.z"]]
+            ax_i, ay_i, az_i = data.loc[i, ["acc.x", "acc.y", "acc.z"]]
+
+            qx, qy, qz, qw = estimator.sensfusion6Update(gx_i, gy_i, gz_i, ax_i, ay_i, az_i, 1/sampling_freq)
+
+            yaw_i, pitch_i, roll_i = R.from_quat([qx, qy, qz, qw]).as_euler('ZYX')
+
+            attitude["roll"].append(roll_i)
+            attitude["pitch"].append(-pitch_i)
+            attitude["yaw"].append(-yaw_i)
+
+        roll_acc = np.gradient(roll_rate, 1 / sampling_freq)
+        pitch_acc = np.gradient(pitch_rate, 1 / sampling_freq)
+        yaw_acc = np.gradient(yaw_rate, 1 / sampling_freq)
 
         acc_x = data["acc.x"] * g0
         acc_y = -data["acc.y"] * g0
@@ -275,6 +296,9 @@ def process_onboard(data, reference_frame):
             "controller.pitchrate": np.radians(data["controller.pitchRate"]),
             "controller.rollrate": np.radians(data["controller.rollRate"]),
             "controller.yawrate": np.radians(data["controller.yawRate"]),
+            "roll":attitude["roll"],
+            "pitch": attitude["pitch"],
+            "yaw":attitude["yaw"],
             "roll_rate": roll_rate,
             "pitch_rate": pitch_rate,
             "yaw_rate": yaw_rate,
@@ -402,31 +426,41 @@ if __name__ == "__main__":
     optitrack_fps = int(float(optitrack_meta["Capture Frame Rate"]))
 
     # Handle NaNs in both dataframes
-    optitrack_data = handle_nan(optitrack_data, optitrack_fps, 2)
     onboard_data = handle_nan(onboard_data, onboard_freq, 2)
+    
+    optitrack_data = handle_nan(optitrack_data, optitrack_fps, 2)
 
+
+    # Process the filtered onboard data
+    onboard_processed = process_onboard(onboard_data, "ForwardRightDown", onboard_freq)
+    # Process the optitrack data
+    optitrack_processed = process_optitrack(optitrack_data, "ForwardRightDown", body_to_CoM)
+
+        
     # Filter the onboard data
-    onboard_filtered = filter_data(onboard_data, filter_cutoff_freq, onboard_freq)
+    onboard_filtered = filter_data(onboard_processed, filter_cutoff_freq, onboard_freq)
     # Filter the optitrack data
-    optitrack_filtered = filter_data(optitrack_data, filter_cutoff_freq, optitrack_fps)
+    optitrack_filtered = filter_data(optitrack_processed, filter_cutoff_freq, optitrack_fps)
 
     # Resample the onboard data down to 100 hz or optitrack_fps
     onboard_sampled = resample_data(onboard_filtered, optitrack_fps, onboard_freq)
 
-    # Process the filtered onboard data
-    onboard_processed = process_onboard(onboard_sampled, "ForwardRightDown")
-    # Process the optitrack data
-    optitrack_processed = process_optitrack(optitrack_filtered, "ForwardRightDown", body_to_CoM)
+
 
     # Match the data
-    lag = sync_timestamps(onboard_processed, optitrack_processed, columns_sync)
+    lag = sync_timestamps(onboard_sampled, optitrack_filtered, columns_sync)
 
     # Shift the optitrack data
-    optitrack_processed = shift_data(optitrack_processed, lag, optitrack_fps)
+    optitrack_processed = shift_data(optitrack_filtered, lag, optitrack_fps)
 
     # Merge synced DataFrames
-    processed_merged = merge_dfs(onboard_processed, optitrack_processed)
+    processed_merged = merge_dfs(onboard_sampled, optitrack_filtered)
 
 
     # Save merged DataFrame
     processed_merged.to_csv(processed_file)
+
+    plt.plot(processed_merged["onboard.yaw"])
+    plt.plot(processed_merged["optitrack.yaw"])
+    plt.ylim(-10, 10)
+    plt.show()
