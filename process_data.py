@@ -363,9 +363,9 @@ def process_onboard(data, reference_frame, sampling_freq):
         yaw_acc = np.gradient(r, 1 / sampling_freq)
 
         # To implement
-        acc_x = data["acc.x"] * g0 * 0
-        acc_y = -data["acc.y"] * g0 * 0
-        acc_z = (-data["acc.z"] + 1) * g0 * 0
+        acc_x = data["acc.x"]
+        acc_y = -data["acc.y"]
+        acc_z = -data["acc.z"]
 
     else:
         print("Reference frame not recognised, use 'ForwardLeftUp' or 'ForwardRightDown' (aerospace standard)")
@@ -383,6 +383,10 @@ def process_onboard(data, reference_frame, sampling_freq):
             "controller.cmd_roll" : data["controller.cmd_roll"],
             "controller.cmd_yaw" : data["controller.cmd_yaw"],
             "controller.cmd_thrust" : data["controller.cmd_thrust"],
+            "motor.m1" : data["motor.m1"],
+            "motor.m2" : data["motor.m2"],
+            "motor.m3" : data["motor.m3"],
+            "motor.m4" : data["motor.m4"],            
             "roll":attitude["roll"],
             "pitch": attitude["pitch"],
             "yaw":attitude["yaw"],
