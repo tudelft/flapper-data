@@ -5,7 +5,7 @@ from math import gcd
 from scipy import signal
 import matplotlib.pyplot as plt
 from utils.state_estimator import MahonyIMU
-
+import os
 
 
 """
@@ -29,10 +29,92 @@ filter_cutoff_freq = 2  # Hz
 g0 = 9.80665  # m/s
 
 # Columns to use to sync the optitrack and IMU data
-columns_sync = ["pitch_rate"]
+columns_sync = ["q"]
 
 body_to_CoM = np.array([0, 0, -0.20])  # Not yet implemented
 
+# Give a name to the columns
+names_optitrack = [
+    "time",
+    "fbqx",
+    "fbqy",
+    "fbqz",
+    "fbqw",
+    "fbx",
+    "fby",
+    "fbz",
+    "fb1x",
+    "fb1y",
+    "fb1z",
+    "fb2x",
+    "fb2y",
+    "fb2z",
+    "fb3x",
+    "fb3y",
+    "fb3z",
+    "fb4x",
+    "fb4y",
+    "fb4z",
+    "fb5x",
+    "fb5y",
+    "fb5z",
+    "fbrwqx",
+    "fbrwqy",
+    "fbrwqz",
+    "fbrwqw",
+    "fbrwx",
+    "fbrwy",
+    "fbrwz",
+    "fbrw1x",
+    "fbrw1y",
+    "fbrw1z",
+    "fbrw2x",
+    "fbrw2y",
+    "fbrw2z",
+    "fbrw3x",
+    "fbrw3y",
+    "fbrw3z",
+    "fblwqx",
+    "fblwqy",
+    "fblwqz",
+    "fblwqw",
+    "fblwx",
+    "fblwy",
+    "fblwz",
+    "fblw1x",
+    "fblw1y",
+    "fblw1z",
+    "fblw2x",
+    "fblw2y",
+    "fblw2z",
+    "fblw3x",
+    "fblw3y",
+    "fblw3z",
+]
+
+names_onboard = [
+    "timestamp",
+    "controller.pitch",
+    "controller.roll",
+    "controller.yaw",
+    "controller.pitchRate",
+    "controller.rollRate",
+    "controller.yawRate",
+    "controller.cmd_pitch",
+    "controller.cmd_roll",
+    "controller.cmd_yaw",
+    "controller.cmd_thrust",
+    "motor.m1",
+    "motor.m2",
+    "motor.m3",
+    "motor.m4",
+    "acc.x",
+    "acc.y",
+    "acc.z",
+    "p",
+    "q",
+    "r"
+]
 
 def get_optitrack_meta(optitrack_csv):
     with open(optitrack_csv, "r") as f:
@@ -233,15 +315,15 @@ def process_optitrack(data, reference_frame, com_body):
             "roll": phi,
             "pitch": theta,
             "yaw": psi,
-            "roll_rate": roll_rate,
-            "pitch_rate": pitch_rate,
-            "yaw_rate": yaw_rate,
-            "roll_acc":roll_acc, 
-            "pitch_acc":pitch_acc, 
-            "yaw_acc":yaw_acc, 
-            "accx": accx_com_body,
-            "accy": accy_com_body,
-            "accz": accz_com_body,
+            "p": roll_rate,
+            "q": pitch_rate,
+            "r": yaw_rate,
+            "p_dot":roll_acc, 
+            "q_dot":pitch_acc, 
+            "r_dot":yaw_acc, 
+            "acc.x": accx_com_body,
+            "acc.y": accy_com_body,
+            "acc.z": accz_com_body,
         }
     )
 
@@ -260,29 +342,30 @@ def process_onboard(data, reference_frame, sampling_freq):
 
         attitude = {"pitch": [], "roll":[], "yaw" : []}
         # IMU uses x forward, y to the left, z up
-        roll_rate = np.radians(data["gyro.x"])
-        pitch_rate = np.radians(-data["gyro.y"])
-        yaw_rate = np.radians(-data["gyro.z"])
+        p = data["p"]
+        q = -data["q"]
+        r = -data["r"]
 
         for i in range(len(data)):
-            gx_i, gy_i, gz_i, = data.loc[i, ["gyro.x", "gyro.y" ,"gyro.z"]]
+            gx_i, gy_i, gz_i, = data.loc[i, ["p", "q" ,"r"]]
             ax_i, ay_i, az_i = data.loc[i, ["acc.x", "acc.y", "acc.z"]]
 
             qx, qy, qz, qw = estimator.sensfusion6Update(gx_i, gy_i, gz_i, ax_i, ay_i, az_i, 1/sampling_freq)
 
-            yaw_i, pitch_i, roll_i = R.from_quat([qx, qy, qz, qw]).as_euler('ZYX')
+            yaw_i, pitch_i, roll_i = np.degrees(R.from_quat([qx, qy, qz, qw]).as_euler('ZYX'))
 
             attitude["roll"].append(roll_i)
             attitude["pitch"].append(-pitch_i)
             attitude["yaw"].append(-yaw_i)
 
-        roll_acc = np.gradient(roll_rate, 1 / sampling_freq)
-        pitch_acc = np.gradient(pitch_rate, 1 / sampling_freq)
-        yaw_acc = np.gradient(yaw_rate, 1 / sampling_freq)
+        roll_acc = np.gradient(p, 1 / sampling_freq)
+        pitch_acc = np.gradient(q, 1 / sampling_freq)
+        yaw_acc = np.gradient(r, 1 / sampling_freq)
 
-        acc_x = data["acc.x"] * g0
-        acc_y = -data["acc.y"] * g0
-        acc_z = (-data["acc.z"] + 1) * g0
+        # To implement
+        acc_x = data["acc.x"] * g0 * 0
+        acc_y = -data["acc.y"] * g0 * 0
+        acc_z = (-data["acc.z"] + 1) * g0 * 0
 
     else:
         print("Reference frame not recognised, use 'ForwardLeftUp' or 'ForwardRightDown' (aerospace standard)")
@@ -290,24 +373,28 @@ def process_onboard(data, reference_frame, sampling_freq):
     processed_data = pd.DataFrame(
         {
             "time": data["time"],
-            "controller.pitch": np.radians(data["controller.pitch"]),
-            "controller.roll": np.radians(data["controller.roll"]),
-            "controller.yaw": np.radians(data["controller.yaw"]),
-            "controller.pitchrate": np.radians(data["controller.pitchRate"]),
-            "controller.rollrate": np.radians(data["controller.rollRate"]),
-            "controller.yawrate": np.radians(data["controller.yawRate"]),
+            "controller.pitch": data["controller.pitch"],
+            "controller.roll": data["controller.roll"],
+            "controller.yaw": data["controller.yaw"],
+            "controller.pitchRate": data["controller.pitchRate"],
+            "controller.rollRate": data["controller.rollRate"],
+            "controller.yawRate": data["controller.yawRate"],
+            "controller.cmd_pitch" : data["controller.cmd_pitch"],
+            "controller.cmd_roll" : data["controller.cmd_roll"],
+            "controller.cmd_yaw" : data["controller.cmd_yaw"],
+            "controller.cmd_thrust" : data["controller.cmd_thrust"],
             "roll":attitude["roll"],
             "pitch": attitude["pitch"],
             "yaw":attitude["yaw"],
-            "roll_rate": roll_rate,
-            "pitch_rate": pitch_rate,
-            "yaw_rate": yaw_rate,
-            "roll_acc": roll_acc,
-            "pitch_acc": pitch_acc,
-            "yaw_acc": yaw_acc,
-            "accx": acc_x,
-            "accy": acc_y,
-            "accz": acc_z,
+            "p": p,
+            "q": q,
+            "r": r,
+            "p_dot": roll_acc,
+            "q_dot": pitch_acc,
+            "r_dot": yaw_acc,
+            "acc.x": acc_x,
+            "acc.y": acc_y,
+            "acc.z": acc_z,
         }
     )
 
@@ -346,97 +433,37 @@ def merge_dfs(onboard, optitrack):
 
 
 if __name__ == "__main__":
-    data_dir = f"data/{flight_exp}/{flight_exp}"
+    data_dir = f"data/raw/{flight_exp}/{flight_exp}"
     optitrack_csv = f"{data_dir}_optitrack.csv"
     onboard_csv = f"{data_dir}_flapper.csv"
-    processed_file = f"{data_dir}_processed.csv" 
-
-    # Give a name to the columns
-    names = [
-        "time",
-        "fbqx",
-        "fbqy",
-        "fbqz",
-        "fbqw",
-        "fbx",
-        "fby",
-        "fbz",
-        "fb1x",
-        "fb1y",
-        "fb1z",
-        "fb2x",
-        "fb2y",
-        "fb2z",
-        "fb3x",
-        "fb3y",
-        "fb3z",
-        "fb4x",
-        "fb4y",
-        "fb4z",
-        "fb5x",
-        "fb5y",
-        "fb5z",
-        "fbrwqx",
-        "fbrwqy",
-        "fbrwqz",
-        "fbrwqw",
-        "fbrwx",
-        "fbrwy",
-        "fbrwz",
-        "fbrw1x",
-        "fbrw1y",
-        "fbrw1z",
-        "fbrw2x",
-        "fbrw2y",
-        "fbrw2z",
-        "fbrw3x",
-        "fbrw3y",
-        "fbrw3z",
-        "fblwqx",
-        "fblwqy",
-        "fblwqz",
-        "fblwqw",
-        "fblwx",
-        "fblwy",
-        "fblwz",
-        "fblw1x",
-        "fblw1y",
-        "fblw1z",
-        "fblw2x",
-        "fblw2y",
-        "fblw2z",
-        "fblw3x",
-        "fblw3y",
-        "fblw3z",
-    ]
+    processed_dir = f"data/processed/{flight_exp}/"
 
     # Read the .csv file into a pandas df
     optitrack_data = pd.read_csv(
         optitrack_csv,
         skiprows=7,
-        usecols=range(1, len(names) + 1),
-        names=names,
+        usecols=range(1, len(names_optitrack) + 1),
+        names=names_optitrack,
         header=None,
     )
 
-    onboard_data = pd.read_csv(onboard_csv)
+    onboard_data = pd.read_csv(onboard_csv, header=0, names=names_onboard)
 
     optitrack_meta = get_optitrack_meta(optitrack_csv)
 
     optitrack_fps = int(float(optitrack_meta["Capture Frame Rate"]))
 
     # Handle NaNs in both dataframes
-    onboard_data = handle_nan(onboard_data, onboard_freq, 2)
+    onboard_data_nonan = handle_nan(onboard_data, onboard_freq, 2)
     
-    optitrack_data = handle_nan(optitrack_data, optitrack_fps, 2)
-
+    optitrack_data_nonan = handle_nan(optitrack_data, optitrack_fps, 2)
 
     # Process the filtered onboard data
-    onboard_processed = process_onboard(onboard_data, "ForwardRightDown", onboard_freq)
+    onboard_processed = process_onboard(onboard_data_nonan, "ForwardRightDown", onboard_freq)
     # Process the optitrack data
-    optitrack_processed = process_optitrack(optitrack_data, "ForwardRightDown", body_to_CoM)
+    optitrack_processed = process_optitrack(optitrack_data_nonan, "ForwardRightDown", body_to_CoM)
 
-        
+    # Filtering
     # Filter the onboard data
     onboard_filtered = filter_data(onboard_processed, filter_cutoff_freq, onboard_freq)
     # Filter the optitrack data
@@ -445,22 +472,17 @@ if __name__ == "__main__":
     # Resample the onboard data down to 100 hz or optitrack_fps
     onboard_sampled = resample_data(onboard_filtered, optitrack_fps, onboard_freq)
 
-
-
     # Match the data
     lag = sync_timestamps(onboard_sampled, optitrack_filtered, columns_sync)
 
     # Shift the optitrack data
-    optitrack_processed = shift_data(optitrack_filtered, lag, optitrack_fps)
+    optitrack_processed_shifted = shift_data(optitrack_filtered, lag, optitrack_fps)
 
     # Merge synced DataFrames
-    processed_merged = merge_dfs(onboard_sampled, optitrack_filtered)
-
+    processed_merged = merge_dfs(onboard_sampled, optitrack_processed_shifted)
 
     # Save merged DataFrame
-    processed_merged.to_csv(processed_file)
-
-    plt.plot(processed_merged["onboard.yaw"])
-    plt.plot(processed_merged["optitrack.yaw"])
-    plt.ylim(-10, 10)
-    plt.show()
+    os.makedirs(os.path.dirname(processed_dir), exist_ok=True)
+    processed_merged.to_csv(f"{processed_dir}/{flight_exp}_processed.csv", index=False)
+    
+    onboard_filtered.to_csv(f"{processed_dir}/{flight_exp}_flapper.csv", index=False)
