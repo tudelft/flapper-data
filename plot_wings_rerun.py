@@ -15,7 +15,7 @@ line_radius = 0.007
 
 flight_exp = "flight_002"
 
-data_path = f"data/{flight_exp}/{flight_exp}_optitrack.csv"
+data_path = f"data/raw/{flight_exp}/{flight_exp}_optitrack.csv"
 
 # Frame definition: x forward, y left, z up
 # OptiTrack z,x,y --> x,y,z, switch also for quaternions

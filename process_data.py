@@ -23,7 +23,7 @@ TODO:
 # OptiTrack z,x,y --> x,y,z
 
 # Select the flight number
-flight_exp = "flight_001"
+flight_exp = "flight_002"
 onboard_freq = 500  # Hz
 filter_cutoff_freq = 10  # Hz
 g0 = 9.80665  # m/s
@@ -448,11 +448,11 @@ def orient_onboard(data, sampling_freq, time_shift):
     oriented_data = pd.DataFrame(
         {
             "controller.pitch": data["controller.pitch"],
-            "controller.roll": -data["controller.roll"],
-            "controller.yaw": -data["controller.yaw"],
+            "controller.roll": data["controller.roll"],
+            "controller.yaw": data["controller.yaw"],
             "controller.pitchRate": data["controller.pitchRate"],
-            "controller.rollRate": -data["controller.rollRate"],
-            "controller.yawRate": -data["controller.yawRate"],
+            "controller.rollRate": data["controller.rollRate"],
+            "controller.yawRate": data["controller.yawRate"],
             "controller.cmd_pitch" : data["controller.cmd_pitch"],
             "controller.cmd_roll" : data["controller.cmd_roll"],
             "controller.cmd_yaw" : data["controller.cmd_yaw"],
@@ -471,8 +471,6 @@ def orient_onboard(data, sampling_freq, time_shift):
     )
 
     time_array = np.round(np.arange(0, len(data["timestamp"]) / sampling_freq, 1 / sampling_freq), 5)
-
-    # now basically take time_shift, shift everything to there, and reset from zero
 
     idx = np.argmin(np.abs(time_array - time_shift))
 
@@ -501,7 +499,7 @@ if __name__ == "__main__":
     )
 
     onboard_data = pd.read_csv(onboard_csv, header=0, names=names_onboard)
-
+    
     # Get Optitrack meta data
     optitrack_meta = get_optitrack_meta(optitrack_csv)
     optitrack_fps = int(float(optitrack_meta["Capture Frame Rate"]))
@@ -538,5 +536,6 @@ if __name__ == "__main__":
     processed_merged.to_csv(f"{processed_dir}/{flight_exp}_processed.csv", index=False)
     
     # Process the onboard data at 500 Hz
+    onboard_data = pd.read_csv(onboard_csv, header=0, names=names_onboard)
     oriented_data = orient_onboard(onboard_data, onboard_freq, time_shift) 
     oriented_data.to_csv(f"{processed_dir}/{flight_exp}_oriented_onboard.csv", index=False)
