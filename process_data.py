@@ -25,7 +25,7 @@ TODO:
 # Select the flight number
 flight_exp = "flight_001"
 onboard_freq = 500  # Hz
-filter_cutoff_freq = 2  # Hz
+filter_cutoff_freq = 10  # Hz
 g0 = 9.80665  # m/s
 
 # Columns to use to sync the optitrack and IMU data
@@ -424,7 +424,7 @@ def shift_data(data, lag, sampling_freq):
         2,
     )
 
-    return data
+    return data, time_shift
 
 # Save everything in radians
 def merge_dfs(onboard, optitrack, sampling_freq):
@@ -434,12 +434,12 @@ def merge_dfs(onboard, optitrack, sampling_freq):
     
     merged = pd.merge(onboard, optitrack, on="time", how="inner")
 
-    merged["time"] = np.arange(0, merged["time"].iloc[-1] - merged["time"].iloc[0] - 1 / sampling_freq, 1 / sampling_freq)
+    merged["time"] = np.round(np.arange(0, merged["time"].iloc[-1] - merged["time"].iloc[0] - 1 / sampling_freq, 1 / sampling_freq), 6)
     
     return merged
 
 
-def orient_onboard(data):
+def orient_onboard(data, sampling_freq, time_shift):
     """
     Orients the onboard logged data to the aerospace standard convention,
     all the angles and setpoints are converted to radians to keep consistency with the outputs from the open loop equations of motion
@@ -448,11 +448,11 @@ def orient_onboard(data):
     oriented_data = pd.DataFrame(
         {
             "controller.pitch": data["controller.pitch"],
-            "controller.roll": data["controller.roll"],
-            "controller.yaw": data["controller.yaw"],
-            "controller.pitchRate": np.radians(data["controller.pitchRate"]),
-            "controller.rollRate": np.radians(data["controller.rollRate"]),
-            "controller.yawRate": np.radians(data["controller.yawRate"]),
+            "controller.roll": -data["controller.roll"],
+            "controller.yaw": -data["controller.yaw"],
+            "controller.pitchRate": data["controller.pitchRate"],
+            "controller.rollRate": -data["controller.rollRate"],
+            "controller.yawRate": -data["controller.yawRate"],
             "controller.cmd_pitch" : data["controller.cmd_pitch"],
             "controller.cmd_roll" : data["controller.cmd_roll"],
             "controller.cmd_yaw" : data["controller.cmd_yaw"],
@@ -461,18 +461,28 @@ def orient_onboard(data):
             "motor.m2" : data["motor.m2"],
             "motor.m3" : data["motor.m3"],
             "motor.m4" : data["motor.m4"],            
-            "p": np.radians(data["gyro.x"]),
-            "q": np.radians(data["gyro.y"]),
-            "r": np.radians(data["gyro.z"]),
+            "p": data["p"],
+            "q": -data["q"],
+            "r": -data["r"],
             "acc.x": data["acc.x"],
             "acc.y": data["acc.y"],
             "acc.z": data["acc.z"],
         }
     )
 
+    time_array = np.round(np.arange(0, len(data["timestamp"]) / sampling_freq, 1 / sampling_freq), 5)
+
+    # now basically take time_shift, shift everything to there, and reset from zero
+
+    idx = np.argmin(np.abs(time_array - time_shift))
+
+    oriented_data = oriented_data.iloc[idx:, :]
+
+    time_array = np.round(np.arange(0, len(oriented_data) / sampling_freq, 1 / sampling_freq), 5)
+
+    oriented_data.insert(0, "time", time_array)
+
     return oriented_data
-
-
 
 
 if __name__ == "__main__":
@@ -518,7 +528,7 @@ if __name__ == "__main__":
     lag = sync_timestamps(onboard_sampled, optitrack_filtered, columns_sync)
 
     # Shift the optitrack data
-    optitrack_processed_shifted = shift_data(optitrack_filtered, lag, optitrack_fps)
+    optitrack_processed_shifted, time_shift = shift_data(optitrack_filtered, lag, optitrack_fps)
 
     # Merge synced DataFrames
     processed_merged = merge_dfs(onboard_sampled, optitrack_processed_shifted, optitrack_fps)
@@ -527,3 +537,6 @@ if __name__ == "__main__":
     os.makedirs(os.path.dirname(processed_dir), exist_ok=True)
     processed_merged.to_csv(f"{processed_dir}/{flight_exp}_processed.csv", index=False)
     
+    # Process the onboard data at 500 Hz
+    oriented_data = orient_onboard(onboard_data, onboard_freq, time_shift) 
+    oriented_data.to_csv(f"{processed_dir}/{flight_exp}_oriented_onboard.csv", index=False)
