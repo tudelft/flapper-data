@@ -342,9 +342,9 @@ def process_onboard(data, reference_frame, sampling_freq):
 
         attitude = {"pitch": [], "roll":[], "yaw" : []}
         # IMU uses x forward, y to the left, z up
-        p = data["p"]
-        q = -data["q"]
-        r = -data["r"]
+        p = np.radians(data["p"])
+        q = np.radians(-data["q"])
+        r = np.radians(-data["r"])
 
         for i in range(len(data)):
             gx_i, gy_i, gz_i, = data.loc[i, ["p", "q" ,"r"]]
@@ -352,7 +352,7 @@ def process_onboard(data, reference_frame, sampling_freq):
 
             qx, qy, qz, qw = estimator.sensfusion6Update(gx_i, gy_i, gz_i, ax_i, ay_i, az_i, 1/sampling_freq)
 
-            yaw_i, pitch_i, roll_i = np.degrees(R.from_quat([qx, qy, qz, qw]).as_euler('ZYX'))
+            yaw_i, pitch_i, roll_i = R.from_quat([qx, qy, qz, qw]).as_euler('ZYX')
 
             attitude["roll"].append(roll_i)
             attitude["pitch"].append(-pitch_i)
@@ -364,8 +364,8 @@ def process_onboard(data, reference_frame, sampling_freq):
 
         # To implement
         acc_x = data["acc.x"]
-        acc_y = -data["acc.y"]
-        acc_z = -data["acc.z"]
+        acc_y = data["acc.y"]
+        acc_z = data["acc.z"]
 
     else:
         print("Reference frame not recognised, use 'ForwardLeftUp' or 'ForwardRightDown' (aerospace standard)")
@@ -427,13 +427,52 @@ def shift_data(data, lag, sampling_freq):
     return data
 
 # Save everything in radians
-def merge_dfs(onboard, optitrack):
+def merge_dfs(onboard, optitrack, sampling_freq):
     onboard = onboard.rename(columns={col: f"onboard.{col}" for col in onboard.columns if col != "time"})
     optitrack = optitrack.rename(columns={col: f"optitrack.{col}" for col in optitrack.columns if col != "time"})
 
+    
     merged = pd.merge(onboard, optitrack, on="time", how="inner")
 
+    merged["time"] = np.arange(0, merged["time"].iloc[-1] - merged["time"].iloc[0] - 1 / sampling_freq, 1 / sampling_freq)
+    
     return merged
+
+
+def orient_onboard(data):
+    """
+    Orients the onboard logged data to the aerospace standard convention,
+    all the angles and setpoints are converted to radians to keep consistency with the outputs from the open loop equations of motion
+    """
+
+    oriented_data = pd.DataFrame(
+        {
+            "controller.pitch": data["controller.pitch"],
+            "controller.roll": data["controller.roll"],
+            "controller.yaw": data["controller.yaw"],
+            "controller.pitchRate": np.radians(data["controller.pitchRate"]),
+            "controller.rollRate": np.radians(data["controller.rollRate"]),
+            "controller.yawRate": np.radians(data["controller.yawRate"]),
+            "controller.cmd_pitch" : data["controller.cmd_pitch"],
+            "controller.cmd_roll" : data["controller.cmd_roll"],
+            "controller.cmd_yaw" : data["controller.cmd_yaw"],
+            "controller.cmd_thrust" : data["controller.cmd_thrust"],
+            "motor.m1" : data["motor.m1"],
+            "motor.m2" : data["motor.m2"],
+            "motor.m3" : data["motor.m3"],
+            "motor.m4" : data["motor.m4"],            
+            "p": np.radians(data["gyro.x"]),
+            "q": np.radians(data["gyro.y"]),
+            "r": np.radians(data["gyro.z"]),
+            "acc.x": data["acc.x"],
+            "acc.y": data["acc.y"],
+            "acc.z": data["acc.z"],
+        }
+    )
+
+    return oriented_data
+
+
 
 
 if __name__ == "__main__":
@@ -453,13 +492,12 @@ if __name__ == "__main__":
 
     onboard_data = pd.read_csv(onboard_csv, header=0, names=names_onboard)
 
+    # Get Optitrack meta data
     optitrack_meta = get_optitrack_meta(optitrack_csv)
-
     optitrack_fps = int(float(optitrack_meta["Capture Frame Rate"]))
 
     # Handle NaNs in both dataframes
     onboard_data_nonan = handle_nan(onboard_data, onboard_freq, 2)
-    
     optitrack_data_nonan = handle_nan(optitrack_data, optitrack_fps, 2)
 
     # Process the filtered onboard data
@@ -483,10 +521,9 @@ if __name__ == "__main__":
     optitrack_processed_shifted = shift_data(optitrack_filtered, lag, optitrack_fps)
 
     # Merge synced DataFrames
-    processed_merged = merge_dfs(onboard_sampled, optitrack_processed_shifted)
+    processed_merged = merge_dfs(onboard_sampled, optitrack_processed_shifted, optitrack_fps)
 
     # Save merged DataFrame
     os.makedirs(os.path.dirname(processed_dir), exist_ok=True)
     processed_merged.to_csv(f"{processed_dir}/{flight_exp}_processed.csv", index=False)
     
-    onboard_filtered.to_csv(f"{processed_dir}/{flight_exp}_flapper.csv", index=False)
