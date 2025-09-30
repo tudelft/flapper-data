@@ -217,97 +217,95 @@ def process_optitrack(data, reference_frame, com_body):
             angles are in radians.
     """
 
-    # For now process only the body data
-    if reference_frame == "ForwardRightDown":
-        # Rotational kinematics: check: correct
-        quats = np.vstack((data["fbqx"], data["fbqy"], data["fbqz"], data["fbqw"])).T
 
-        r = R.from_quat(quats, scalar_first=False)
+    # Rotational kinematics: check: correct
+    quats = np.vstack((data["fbqx"], data["fbqy"], data["fbqz"], data["fbqw"])).T
 
-        # Optitrack defines Y-up, Z-right, X-forward
-        euler_angles = r.as_euler("YZX", degrees=False)
+    r = R.from_quat(quats, scalar_first=False)
 
-        # First extract yaw, pitch and then roll
-        psi, theta, phi = -euler_angles[:, 0], euler_angles[:, 1], euler_angles[:, 2]
+    # Optitrack defines Y-up, Z-right, X-forward
+    euler_angles = r.as_euler("YZX", degrees=False)
 
-        # Euler rates by taking the derivative of euler angles
-        phi_rate = np.gradient(phi, data["time"])
-        theta_rate = np.gradient(theta, data["time"])
-        psi_rate = np.gradient(psi, data["time"])
-        euler_rates = np.asarray([phi_rate, theta_rate, psi_rate])  # (3, N)
+    # First extract yaw, pitch and then roll
+    psi, theta, phi = -euler_angles[:, 0], euler_angles[:, 1], euler_angles[:, 2]
 
-        rotations_rates = np.array(
+    # Euler rates by taking the derivative of euler angles
+    phi_rate = np.gradient(phi, data["time"])
+    theta_rate = np.gradient(theta, data["time"])
+    psi_rate = np.gradient(psi, data["time"])
+    euler_rates = np.asarray([phi_rate, theta_rate, psi_rate])  # (3, N)
+
+    rotations_rates = np.array(
+        [
+            [np.ones_like(theta), np.zeros_like(theta), -np.sin(theta)],
+            [np.zeros_like(theta), np.cos(phi), np.sin(phi) * np.cos(theta)],
+            [np.zeros_like(theta), -np.sin(phi), np.cos(phi) * np.cos(theta)],
+        ]
+    )  # (3, 3, N)
+
+    # Body rates found from the rotation matrix above
+    roll_rate, pitch_rate, yaw_rate = np.einsum("ijk,jk->ik", rotations_rates, euler_rates)  # (N,),    (N,),       (N,)
+
+    rates_body_wrt_ref = np.asarray([roll_rate, pitch_rate, yaw_rate])  # (3, N)
+
+    roll_acc = np.gradient(roll_rate, data["time"])
+    pitch_acc = np.gradient(pitch_rate, data["time"])
+    yaw_acc = np.gradient(yaw_rate, data["time"])
+
+    alpha_body_wrt_ref = np.asarray([roll_acc, pitch_acc, yaw_acc])  # (3, N)
+
+    # Now move onto translational kinematics
+    # Position of the geometric center in global frame
+    x_ref = np.array(data["fbx"])
+    y_ref = np.array(data["fbz"])
+    z_ref = np.array(-data["fby"])
+    pos_ref = np.asarray([x_ref, y_ref, z_ref])  # (3, N)
+
+    # Velocities of the geometric center in refal frame
+    vel_x_ref = np.gradient(x_ref, data["time"])
+    vel_y_ref = np.gradient(y_ref, data["time"])
+    vel_z_ref = np.gradient(z_ref, data["time"])
+    vel_ref = np.asarray([vel_x_ref, vel_y_ref, vel_z_ref])  # (3, N)
+
+    # Acceleration of the geometric center in refal frame
+    acc_x_ref = np.gradient(vel_x_ref, data["time"])
+    acc_y_ref = np.gradient(vel_y_ref, data["time"])
+    acc_z_ref = np.gradient(vel_z_ref, data["time"])
+    acc_ref = np.asarray([acc_x_ref, acc_y_ref, acc_z_ref])  # (3, N)
+
+    # Position of the CoM in refal frame
+    pos_com_ref = pos_ref + com_body[:, np.newaxis]  # reshape com_body to (3, N)
+
+    vel_com_ref = vel_ref + np.cross(rates_body_wrt_ref.T, com_body.ravel()).T
+
+    acc_com_ref = acc_ref + np.cross(alpha_body_wrt_ref.T, com_body.ravel()).T + np.cross(rates_body_wrt_ref.T, np.cross(rates_body_wrt_ref.T, com_body.ravel())).T
+
+    # Rotations matrix from body frame to global frame
+    rotations_BodyToRef = np.array(
+        [
             [
-                [np.ones_like(theta), np.zeros_like(theta), -np.sin(theta)],
-                [np.zeros_like(theta), np.cos(phi), np.sin(phi) * np.cos(theta)],
-                [np.zeros_like(theta), -np.sin(phi), np.cos(phi) * np.cos(theta)],
-            ]
-        )  # (3, 3, N)
-
-        # Body rates found from the rotation matrix above
-        roll_rate, pitch_rate, yaw_rate = np.einsum("ijk,jk->ik", rotations_rates, euler_rates)  # (N,),    (N,),       (N,)
-
-        rates_body_wrt_ref = np.asarray([roll_rate, pitch_rate, yaw_rate])  # (3, N)
-
-        roll_acc = np.gradient(roll_rate, data["time"])
-        pitch_acc = np.gradient(pitch_rate, data["time"])
-        yaw_acc = np.gradient(yaw_rate, data["time"])
-
-        alpha_body_wrt_ref = np.asarray([roll_acc, pitch_acc, yaw_acc])  # (3, N)
-
-        # Now move onto translational kinematics
-        # Position of the geometric center in global frame
-        x_ref = np.array(data["fbx"])
-        y_ref = np.array(data["fbz"])
-        z_ref = np.array(-data["fby"])
-        pos_ref = np.asarray([x_ref, y_ref, z_ref])  # (3, N)
-
-        # Velocities of the geometric center in refal frame
-        vel_x_ref = np.gradient(x_ref, data["time"])
-        vel_y_ref = np.gradient(y_ref, data["time"])
-        vel_z_ref = np.gradient(z_ref, data["time"])
-        vel_ref = np.asarray([vel_x_ref, vel_y_ref, vel_z_ref])  # (3, N)
-
-        # Acceleration of the geometric center in refal frame
-        acc_x_ref = np.gradient(vel_x_ref, data["time"])
-        acc_y_ref = np.gradient(vel_y_ref, data["time"])
-        acc_z_ref = np.gradient(vel_z_ref, data["time"])
-        acc_ref = np.asarray([acc_x_ref, acc_y_ref, acc_z_ref])  # (3, N)
-
-        # Position of the CoM in refal frame
-        pos_com_ref = pos_ref + com_body[:, np.newaxis]  # reshape com_body to (3, N)
-
-        vel_com_ref = vel_ref + np.cross(rates_body_wrt_ref.T, com_body.ravel()).T
-
-        acc_com_ref = acc_ref + np.cross(alpha_body_wrt_ref.T, com_body.ravel()).T + np.cross(rates_body_wrt_ref.T, np.cross(rates_body_wrt_ref.T, com_body.ravel())).T
-
-        # Rotations matrix from body frame to global frame
-        rotations_BodyToRef = np.array(
+                np.cos(theta) * np.cos(psi),
+                np.cos(theta) * np.sin(psi),
+                -np.sin(theta),
+            ],
             [
-                [
-                    np.cos(theta) * np.cos(psi),
-                    np.cos(theta) * np.sin(psi),
-                    -np.sin(theta),
-                ],
-                [
-                    (-np.cos(phi) * np.sin(psi) + np.sin(phi) * np.sin(theta) * np.cos(psi)),
-                    (np.cos(phi) * np.cos(psi) + np.sin(phi) * np.sin(theta) * np.sin(psi)),
-                    np.sin(phi) * np.cos(theta),
-                ],
-                [
-                    (np.sin(phi) * np.sin(psi) + np.cos(phi) * np.sin(theta) * np.cos(psi)),
-                    (-np.sin(phi) * np.cos(psi) + np.cos(phi) * np.sin(theta) * np.sin(psi)),
-                    np.cos(phi) * np.cos(theta),
-                ],
-            ]
-        )
+                (-np.cos(phi) * np.sin(psi) + np.sin(phi) * np.sin(theta) * np.cos(psi)),
+                (np.cos(phi) * np.cos(psi) + np.sin(phi) * np.sin(theta) * np.sin(psi)),
+                np.sin(phi) * np.cos(theta),
+            ],
+            [
+                (np.sin(phi) * np.sin(psi) + np.cos(phi) * np.sin(theta) * np.cos(psi)),
+                (-np.sin(phi) * np.cos(psi) + np.cos(phi) * np.sin(theta) * np.sin(psi)),
+                np.cos(phi) * np.cos(theta),
+            ],
+        ]
+    )
 
-        velx_com_body, vely_com_body, velz_com_body = np.einsum("ijk,jk->ik", rotations_BodyToRef.transpose(1, 0, 2), vel_com_ref)
+    velx_com_body, vely_com_body, velz_com_body = np.einsum("ijk,jk->ik", rotations_BodyToRef.transpose(1, 0, 2), vel_com_ref)
 
-        accx_com_body, accy_com_body, accz_com_body = np.einsum("ijk,jk->ik", rotations_BodyToRef.transpose(1, 0, 2), acc_com_ref)
+    accx_com_body, accy_com_body, accz_com_body = np.einsum("ijk,jk->ik", rotations_BodyToRef.transpose(1, 0, 2), acc_com_ref)
 
-    else:
-        print("Reference frame not recognised, use 'ForwardLeftUp' or 'ForwardRightDown' (aerospace standard)")
+
 
     processed_data = pd.DataFrame(
         {
