@@ -188,17 +188,6 @@ def log_body_axes(df, i, axes_radius):
         ),
     )
 
-def log_last_marker_wings(df, i):
-
-    pos_last_marker_L = np.array([df["fblw3z"].iloc[i], df["fblw3x"].iloc[i], df["fblw3y"].iloc[i]])
-
-    pos_body_center = np.array([df["fbz"].iloc[i], df["fbx"].iloc[i], df["fby"].iloc[i]])
-
-    pos_marker_L_to_body  = pos_last_marker_L - pos_body_center
-    
-    rr.log("/frequency/x_pos", rr.Scalars(pos_marker_L_to_body[0]))
-    rr.log("/frequency/y_pos", rr.Scalars(pos_marker_L_to_body[1]))
-
 def log_dihedral_frequency(df, i):
     body = np.array([df["fbz"].iloc[i], df["fbx"].iloc[i], df["fby"].iloc[i]])
     top_marker = np.array([df["fb1z"].iloc[i], df["fb1x"].iloc[i], df["fb1y"].iloc[i]])
@@ -235,7 +224,8 @@ def log_dihedral_frequency(df, i):
         dihedral = -np.arcsin(np.linalg.norm(np.cross(forward_body, norm_dihedral)) / (np.linalg.norm(forward_body) * np.linalg.norm(norm_dihedral)))
 
     offset = 10.3  # deg
-    rr.log("/frequency/angle", rr.Scalars(np.degrees(flapping_angle)))
+
+    rr.log("/frequency/angle_right_wing", rr.Scalars(np.degrees(flapping_angle)))
     rr.log("dihedral/dihedral", rr.Scalars(np.rad2deg(dihedral) - offset))
 
 
@@ -324,7 +314,6 @@ if __name__ == "__main__":
         log_wing_strips(df, i, "left", line_radius)
         log_body_axes(df, i, axes_radius)
         log_dihedral_frequency(df, i)
-        log_last_marker_wings(df, i)
 
 
         rr.log("/rotations/pitch", rr.Scalars(processed_optitrack["pitch"].loc[i]))
