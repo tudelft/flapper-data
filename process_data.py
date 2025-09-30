@@ -25,7 +25,7 @@ TODO:
 # Select the flight number
 flight_exp = "flight_002"
 onboard_freq = 500  # Hz
-filter_cutoff_freq = 10  # Hz
+filter_cutoff_freq = 1  # Hz
 g0 = 9.80665  # m/s
 
 # Columns to use to sync the optitrack and IMU data
@@ -362,10 +362,9 @@ def process_onboard(data, reference_frame, sampling_freq):
         pitch_acc = np.gradient(q, 1 / sampling_freq)
         yaw_acc = np.gradient(r, 1 / sampling_freq)
 
-        # To implement
-        acc_x = data["acc.x"]
-        acc_y = data["acc.y"]
-        acc_z = data["acc.z"]
+        acc_x = -(data["acc.x"] - np.sin(attitude["pitch"]))*g0
+        acc_y = -(data["acc.y"] + np.sin(attitude["roll"])*np.cos(attitude["pitch"]))*g0
+        acc_z = (data["acc.z"] - np.cos(attitude["roll"])*np.cos(attitude["pitch"]))*g0
 
     else:
         print("Reference frame not recognised, use 'ForwardLeftUp' or 'ForwardRightDown' (aerospace standard)")
@@ -533,9 +532,10 @@ if __name__ == "__main__":
 
     # Save merged DataFrame
     os.makedirs(os.path.dirname(processed_dir), exist_ok=True)
-    processed_merged.to_csv(f"{processed_dir}/{flight_exp}_processed.csv", index=False)
+    # processed_merged.to_csv(f"{processed_dir}/{flight_exp}_processed.csv", index=False)
     
     # Process the onboard data at 500 Hz
     onboard_data = pd.read_csv(onboard_csv, header=0, names=names_onboard)
     oriented_data = orient_onboard(onboard_data, onboard_freq, time_shift) 
     oriented_data.to_csv(f"{processed_dir}/{flight_exp}_oriented_onboard.csv", index=False)
+    
