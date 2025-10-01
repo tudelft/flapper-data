@@ -7,31 +7,24 @@ import matplotlib.pyplot as plt
 from utils.state_estimator import MahonyIMU
 import os
 
+WINDOW_SIZE = 16
+TARGET_FFT_SIZE = 256
+FREQ_RANGE = (0, 25)
 
-"""
-TODO:
-    - define the clearly the body and global values, dd _glob or _body to each variable
-
-    rigid_body_names = ["FlapperBody", "FlapperRightWing", "FlapperLeftWing"]
-
-    - Handle column names in a different manner
-    - log flapping frequency
-    - log dihedral
-    - fix accelerations handling on imu
-"""
 
 # OptiTrack z,x,y --> x,y,z
 
 # Select the flight number
-flight_exp = "flight_002"
+flight_exp = "flight_001"
 onboard_freq = 500  # Hz
-filter_cutoff_freq = 1  # Hz
+filter_cutoff_freq = 5 # Hz
+FILTER_BOOL = False
 g0 = 9.80665  # m/s
 
 # Columns to use to sync the optitrack and IMU data
 columns_sync = ["q"]
 
-body_to_CoM = np.array([0, 0, -0.20])  # Not yet implemented
+body_to_CoM = np.array([0, 0, -0.20])
 
 # Give a name to the columns
 names_optitrack = [
@@ -128,6 +121,57 @@ def get_optitrack_meta(optitrack_csv):
 
     return metadata
 
+def calculate_dihedral_angle(forward_body, norm_dihedral):
+    """Calculate dihedral angle with proper sign"""
+    cross_products = np.cross(forward_body, norm_dihedral)
+
+    # Norms
+    norms_cross = np.linalg.norm(cross_products, axis=1)
+    norms_forward = np.linalg.norm(forward_body, axis=1)
+    norms_dihedral = np.linalg.norm(norm_dihedral, axis=1)
+
+    # Unsigned angles
+    angles = np.arcsin(norms_cross / (norms_forward * norms_dihedral))
+
+    # Assign sign based on z-component of cross product
+    signs = np.where(cross_products[:, 2] >= 0, 1, -1)
+    return angles * signs
+
+def calculate_frequency(norm_dihedral, wing_vector, sample_rate=100, window_size=256, freq_range=(5, 25)):
+
+    dot = np.einsum('ij,ij->i', wing_vector, norm_dihedral)
+
+    flapping_angle = np.arcsin(
+        dot / 
+        (np.linalg.norm(wing_vector) * np.linalg.norm(norm_dihedral))
+    )
+
+    signal = flapping_angle - np.mean(flapping_angle)
+
+    windows = np.lib.stride_tricks.sliding_window_view(signal, window_size)
+    
+    # Zero-pad each window to fft_size
+    padded = np.zeros((windows.shape[0], window_size))
+    padded[:, :window_size] = windows
+
+    # FFT for all windows at once
+    fft_vals = np.fft.fft(padded, axis=1)
+    freqs = np.fft.fftfreq(window_size, 1/sample_rate)
+
+    # Restrict to target frequency range
+    mask = (freqs >= freq_range[0]) & (freqs <= freq_range[1])
+    valid_freqs = freqs[mask]
+    valid_fft = np.abs(fft_vals[:, mask])
+
+    # Pick dominant frequency per window
+    dominant_idx = np.argmax(valid_fft, axis=1)
+    dominant_freqs = valid_freqs[dominant_idx]
+
+    result = np.full(len(signal), np.nan)
+    result[:len(dominant_freqs)] = dominant_freqs
+
+    return result
+
 
 def handle_nan(data, frame_rate, time_limit):
     """
@@ -178,9 +222,10 @@ def filter_data(data, cutoff_freq, sampling_freq):
     filter --> scipy.signal.butter
     use scipy.integrate.simpson or trapezoidal
     """
+   
     columns_name = data.columns
 
-    b, a = signal.butter(2, cutoff_freq, fs=sampling_freq)  # type: ignore
+    b, a = signal.butter(2, cutoff_freq, fs=sampling_freq)
 
     filtered_data = signal.filtfilt(b, a, data.iloc[:, 1:], axis=0)
 
@@ -188,12 +233,12 @@ def filter_data(data, cutoff_freq, sampling_freq):
 
     time_array = np.round(np.linspace(0, filtered_df.shape[0] / sampling_freq, filtered_df.shape[0]), 2)
 
-    filtered_df.insert(0, "time", time_array)
+    filtered_df.insert(0, "time", time_array)        
 
     return filtered_df
 
 
-def process_optitrack(data, reference_frame, com_body):
+def process_optitrack(data, com_body):
     """
     Orients the optitrack data to the correct body orientation. Optitrack defines body axes
     as RightForwardUp respectively for x, y, z. Thus use a Euler intrinsic rotation, 'yxz',
@@ -213,13 +258,20 @@ def process_optitrack(data, reference_frame, com_body):
     Returns:
     --------
         oriented_data: pandas.DataFrame
-            TBD: DataFrame containing 6 columns, ['x', 'y', 'z', 'roll', 'pitch', 'yaw'],
-            angles are in radians.
     """
+    
+    body_pos_ref = np.asarray([data["fbx"], data["fbz"], -data["fby"]])  # (3, N)
+    wing_rootR_ref = np.array([data["fbrwz"], data["fbrwx"], data["fbrwy"]])
+    wing_lastR_ref = np.array([data["fbrw3z"], data["fbrw3x"], data["fbrw3y"]])
+    wing_rootL_ref = np.array([data["fblwz"], data["fblwx"], data["fblwy"]])
+    wing_lastL_ref = np.array([data["fblw3z"], data["fblw3x"], data["fblw3y"]])
+    top_body_marker_ref = np.array([data["fb1z"], data["fb1x"], data["fb1y"]])
+    
+    
 
-
-    # Rotational kinematics: check: correct
+    # Rotational kinematics
     quats = np.vstack((data["fbqx"], data["fbqy"], data["fbqz"], data["fbqw"])).T
+
 
     r = R.from_quat(quats, scalar_first=False)
 
@@ -229,11 +281,9 @@ def process_optitrack(data, reference_frame, com_body):
     # First extract yaw, pitch and then roll
     psi, theta, phi = -euler_angles[:, 0], euler_angles[:, 1], euler_angles[:, 2]
 
-    # Euler rates by taking the derivative of euler angles
-    phi_rate = np.gradient(phi, data["time"])
-    theta_rate = np.gradient(theta, data["time"])
-    psi_rate = np.gradient(psi, data["time"])
-    euler_rates = np.asarray([phi_rate, theta_rate, psi_rate])  # (3, N)
+    oriented_euler = np.asarray([phi, theta, psi])
+    
+    euler_rates = np.gradient(oriented_euler, data['time'], axis=1)  # (3, N)
 
     rotations_rates = np.array(
         [
@@ -244,37 +294,19 @@ def process_optitrack(data, reference_frame, com_body):
     )  # (3, 3, N)
 
     # Body rates found from the rotation matrix above
-    roll_rate, pitch_rate, yaw_rate = np.einsum("ijk,jk->ik", rotations_rates, euler_rates)  # (N,),    (N,),       (N,)
+    roll_rate, pitch_rate, yaw_rate = np.einsum("ijk,jk->ik", rotations_rates, euler_rates)  # (N,), (N,), (N,)
 
     rates_body_wrt_ref = np.asarray([roll_rate, pitch_rate, yaw_rate])  # (3, N)
 
-    roll_acc = np.gradient(roll_rate, data["time"])
-    pitch_acc = np.gradient(pitch_rate, data["time"])
-    yaw_acc = np.gradient(yaw_rate, data["time"])
-
-    alpha_body_wrt_ref = np.asarray([roll_acc, pitch_acc, yaw_acc])  # (3, N)
+    alpha_body_wrt_ref = np.gradient(rates_body_wrt_ref, data['time'], axis=1)  # (3, N)
 
     # Now move onto translational kinematics
-    # Position of the geometric center in global frame
-    x_ref = np.array(data["fbx"])
-    y_ref = np.array(data["fbz"])
-    z_ref = np.array(-data["fby"])
-    pos_ref = np.asarray([x_ref, y_ref, z_ref])  # (3, N)
+    vel_ref = np.gradient(body_pos_ref, data["time"], axis=1)  # (3, N)
 
-    # Velocities of the geometric center in refal frame
-    vel_x_ref = np.gradient(x_ref, data["time"])
-    vel_y_ref = np.gradient(y_ref, data["time"])
-    vel_z_ref = np.gradient(z_ref, data["time"])
-    vel_ref = np.asarray([vel_x_ref, vel_y_ref, vel_z_ref])  # (3, N)
+    acc_ref = np.gradient(vel_ref, data["time"], axis=1)  # (3, N)
 
-    # Acceleration of the geometric center in refal frame
-    acc_x_ref = np.gradient(vel_x_ref, data["time"])
-    acc_y_ref = np.gradient(vel_y_ref, data["time"])
-    acc_z_ref = np.gradient(vel_z_ref, data["time"])
-    acc_ref = np.asarray([acc_x_ref, acc_y_ref, acc_z_ref])  # (3, N)
-
-    # Position of the CoM in refal frame
-    pos_com_ref = pos_ref + com_body[:, np.newaxis]  # reshape com_body to (3, N)
+    # Position of the CoM in body frame
+    pos_com_ref = body_pos_ref + com_body[:, np.newaxis]  # reshape com_body to (3, N)
 
     vel_com_ref = vel_ref + np.cross(rates_body_wrt_ref.T, com_body.ravel()).T
 
@@ -301,11 +333,34 @@ def process_optitrack(data, reference_frame, com_body):
         ]
     )
 
-    velx_com_body, vely_com_body, velz_com_body = np.einsum("ijk,jk->ik", rotations_BodyToRef.transpose(1, 0, 2), vel_com_ref)
+    velx_com_body = 0
+    vely_com_body = 0
+    velz_com_body = 0 
 
-    accx_com_body, accy_com_body, accz_com_body = np.einsum("ijk,jk->ik", rotations_BodyToRef.transpose(1, 0, 2), acc_com_ref)
+    accx_com_body = 0
+    accy_com_body = 0
+    accz_com_body = 0
 
+    # Compute and process the flapping frequency
 
+    forward_body = r.apply([0, 1, 0]) 
+    
+
+    BA_right = body_pos_ref - top_body_marker_ref
+    BC_right = wing_rootR_ref - body_pos_ref
+    norm_dihedral_right = np.cross(BA_right.T, BC_right.T)
+    right_wing_vector = (wing_lastR_ref - wing_rootR_ref).T
+
+    freq_right = calculate_frequency(norm_dihedral_right, right_wing_vector, optitrack_fps, WINDOW_SIZE, FREQ_RANGE)
+    dihedral_right = calculate_dihedral_angle(forward_body, norm_dihedral_right)
+
+    BA_left = body_pos_ref - top_body_marker_ref
+    BC_left = wing_rootL_ref - body_pos_ref
+    norm_dihedral_left = np.cross(BA_left.T, BC_left.T)
+    left_wing_vector = (wing_lastL_ref - wing_rootL_ref).T
+
+    freq_left = calculate_frequency(norm_dihedral_left, left_wing_vector, optitrack_fps, WINDOW_SIZE, FREQ_RANGE)
+    dihedral_left = calculate_dihedral_angle(forward_body, norm_dihedral_left)
 
     processed_data = pd.DataFrame(
         {
@@ -316,56 +371,61 @@ def process_optitrack(data, reference_frame, com_body):
             "p": roll_rate,
             "q": pitch_rate,
             "r": yaw_rate,
-            "p_dot":roll_acc, 
-            "q_dot":pitch_acc, 
-            "r_dot":yaw_acc, 
+            "p_dot":alpha_body_wrt_ref[0, :], 
+            "q_dot":alpha_body_wrt_ref[1, :], 
+            "r_dot":alpha_body_wrt_ref[2, :], 
             "acc.x": accx_com_body,
             "acc.y": accy_com_body,
             "acc.z": accz_com_body,
+            "freq.right":freq_right,
+            "freq.left":freq_left, 
+            "dihedral.right":dihedral_right, 
+            "dihedral.left":dihedral_left
         }
     )
+
+    # Include all the markers position in the processed dataframe
+    processed_data = pd.concat([processed_data, data.iloc[:, 1:]], axis=1)
 
     return processed_data
 
 
-def process_onboard(data, reference_frame, sampling_freq):
-    if reference_frame == "ForwardRightDown":
-        # Using reference frame Forward, Right, Down
+def process_onboard(data, sampling_freq):
 
-        time_array = np.round(np.linspace(0, data.shape[0] / sampling_freq, data.shape[0]), 2)
+    # Using reference frame Forward, Right, Down
 
-        data.insert(0, "time", time_array)
+    time_array = np.round(np.linspace(0, data.shape[0] / sampling_freq, data.shape[0]), 2)
 
-        estimator = MahonyIMU()
+    data.insert(0, "time", time_array)
 
-        attitude = {"pitch": [], "roll":[], "yaw" : []}
-        # IMU uses x forward, y to the left, z up
-        p = np.radians(data["p"])
-        q = np.radians(-data["q"])
-        r = np.radians(-data["r"])
+    estimator = MahonyIMU()
 
-        for i in range(len(data)):
-            gx_i, gy_i, gz_i, = data.loc[i, ["p", "q" ,"r"]]
-            ax_i, ay_i, az_i = data.loc[i, ["acc.x", "acc.y", "acc.z"]]
+    attitude = {"pitch": [], "roll":[], "yaw" : []}
+    # IMU uses x forward, y to the left, z up
+    p = np.radians(data["p"])
+    q = np.radians(-data["q"])
+    r = np.radians(-data["r"])
 
-            qx, qy, qz, qw = estimator.sensfusion6Update(gx_i, gy_i, gz_i, ax_i, ay_i, az_i, 1/sampling_freq)
+    for i in range(len(data)):
+        gx_i, gy_i, gz_i, = data.loc[i, ["p", "q" ,"r"]]
+        ax_i, ay_i, az_i = data.loc[i, ["acc.x", "acc.y", "acc.z"]]
 
-            yaw_i, pitch_i, roll_i = R.from_quat([qx, qy, qz, qw]).as_euler('ZYX')
+        qx, qy, qz, qw = estimator.sensfusion6Update(gx_i, gy_i, gz_i, ax_i, ay_i, az_i, 1/sampling_freq)
 
-            attitude["roll"].append(roll_i)
-            attitude["pitch"].append(-pitch_i)
-            attitude["yaw"].append(-yaw_i)
+        yaw_i, pitch_i, roll_i = R.from_quat([qx, qy, qz, qw]).as_euler('ZYX')
 
-        roll_acc = np.gradient(p, 1 / sampling_freq)
-        pitch_acc = np.gradient(q, 1 / sampling_freq)
-        yaw_acc = np.gradient(r, 1 / sampling_freq)
+        attitude["roll"].append(roll_i)
+        attitude["pitch"].append(-pitch_i)
+        attitude["yaw"].append(-yaw_i)
 
-        acc_x = -(data["acc.x"] - np.sin(attitude["pitch"]))*g0
-        acc_y = -(data["acc.y"] + np.sin(attitude["roll"])*np.cos(attitude["pitch"]))*g0
-        acc_z = (data["acc.z"] - np.cos(attitude["roll"])*np.cos(attitude["pitch"]))*g0
+    roll_acc = np.gradient(p, 1 / sampling_freq)
+    pitch_acc = np.gradient(q, 1 / sampling_freq)
+    yaw_acc = np.gradient(r, 1 / sampling_freq)
 
-    else:
-        print("Reference frame not recognised, use 'ForwardLeftUp' or 'ForwardRightDown' (aerospace standard)")
+    acc_x = -(data["acc.x"] - np.sin(attitude["pitch"]))*g0
+    acc_y = -(data["acc.y"] + np.sin(attitude["roll"])*np.cos(attitude["pitch"]))*g0
+    acc_z = (data["acc.z"] - np.cos(attitude["roll"])*np.cos(attitude["pitch"]))*g0
+
 
     processed_data = pd.DataFrame(
         {
@@ -428,7 +488,6 @@ def merge_dfs(onboard, optitrack, sampling_freq):
     onboard = onboard.rename(columns={col: f"onboard.{col}" for col in onboard.columns if col != "time"})
     optitrack = optitrack.rename(columns={col: f"optitrack.{col}" for col in optitrack.columns if col != "time"})
 
-    
     merged = pd.merge(onboard, optitrack, on="time", how="inner")
 
     merged["time"] = np.round(np.arange(0, merged["time"].iloc[-1] - merged["time"].iloc[0] - 1 / sampling_freq, 1 / sampling_freq), 6)
@@ -506,9 +565,9 @@ if __name__ == "__main__":
     optitrack_data_nonan = handle_nan(optitrack_data, optitrack_fps, 2)
 
     # Process the filtered onboard data
-    onboard_processed = process_onboard(onboard_data_nonan, "ForwardRightDown", onboard_freq)
+    onboard_processed = process_onboard(onboard_data_nonan, onboard_freq)
     # Process the optitrack data
-    optitrack_processed = process_optitrack(optitrack_data_nonan, "ForwardRightDown", body_to_CoM)
+    optitrack_processed = process_optitrack(optitrack_data_nonan, body_to_CoM)
 
     # Filtering
     # Filter the onboard data
@@ -530,10 +589,9 @@ if __name__ == "__main__":
 
     # Save merged DataFrame
     os.makedirs(os.path.dirname(processed_dir), exist_ok=True)
-    # processed_merged.to_csv(f"{processed_dir}/{flight_exp}_processed.csv", index=False)
+    processed_merged.to_csv(f"{processed_dir}/{flight_exp}_processed.csv", index=False)
     
     # Process the onboard data at 500 Hz
     onboard_data = pd.read_csv(onboard_csv, header=0, names=names_onboard)
     oriented_data = orient_onboard(onboard_data, onboard_freq, time_shift) 
     oriented_data.to_csv(f"{processed_dir}/{flight_exp}_oriented_onboard.csv", index=False)
-    
