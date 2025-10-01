@@ -13,29 +13,12 @@ axes_radius = 0.002
 marker_radius = 0.02
 line_radius = 0.007
 
-flight_exp = "flight_002"
+flight_exp = "flight_001"
 
-data_path = f"data/raw/{flight_exp}/{flight_exp}_optitrack.csv"
+
 
 # Frame definition: x forward, y left, z up
 # OptiTrack z,x,y --> x,y,z, switch also for quaternions
-
-
-# def mirror_point_through_plane(P, A, B, C):
-#     # P: point to mirror (np.array([x, y, z]))
-#     # A, B, C: three points on the plane (np.array([x, y, z]))
-#     # Compute plane normal
-#     AB = B - A
-#     AC = C - A
-#     n = np.cross(AB, AC)
-#     n = n / np.linalg.norm(n)
-#     # Compute vector from A to P
-#     AP = P - A
-#     # Distance from P to plane
-#     d = np.dot(AP, n)
-#     # Mirrored point
-#     P_mirror = P - 2 * d * n
-#     return P_mirror
 
 angle_values_R = []
 angle_values_L = []
@@ -45,6 +28,48 @@ WINDOW_SIZE = 16
 TARGET_FFT_SIZE = 256
 SAMPLE_RATE = 100
 FREQ_RANGE = (5, 25)
+
+RUN_PROCESSED = True
+
+if RUN_PROCESSED:
+    prepend = "optitrack."
+    data_path = f"data/processed/{flight_exp}/{flight_exp}_processed.csv"
+
+else:
+    prepend = ""
+    data_path = f"data/raw/{flight_exp}/{flight_exp}_optitrack.csv"
+
+def mirror_point_through_plane(P, A, B, C):
+    # P: point to mirror (np.array([x, y, z]))
+    # A, B, C: three points on the plane (np.array([x, y, z]))
+    # Compute plane normal
+    AB = B - A
+    AC = C - A
+    n = np.cross(AB, AC)
+    n = n / np.linalg.norm(n)
+    # Compute vector from A to P
+    AP = P - A
+    # Distance from P to plane
+    d = np.dot(AP, n)
+    # Mirrored point
+    P_mirror = P - 2 * d * n
+    return P_mirror
+
+blueprint = rrb.Blueprint(
+    rrb.Vertical(
+        rrb.Spatial3DView(
+            origin="/flapper/",
+            name="flapper",
+        ),
+        rrb.TimeSeriesView(origin="/dihedral/", name="dihedral", visible=False),
+        rrb.TimeSeriesView(origin="/rotations/", name="rotations", visible=False),
+        rrb.TimeSeriesView(origin="/frequency/", name="frequency", visible=True),
+        rrb.TimeSeriesView(origin="/position/", name="optitrack position", visible = False), 
+        rrb.TimeSeriesView(origin="/pwm_inputs/", name="pwm values", visible = True)
+
+    ),
+    collapse_panels=False,
+)
 
 def calculate_flapping_frequency(signal_window, sample_rate=100, fft_size=256, freq_range=(5, 25)):
     """Calculate dominant frequency from signal window using FFT"""
@@ -78,30 +103,15 @@ def calculate_dihedral_angle(forward_body, norm_dihedral):
     return angle if cross_product[2] >= 0 else -angle
 
 
-blueprint = rrb.Blueprint(
-    rrb.Vertical(
-        rrb.Spatial3DView(
-            origin="/flapper/",
-            name="flapper",
-        ),
-        rrb.TimeSeriesView(origin="/dihedral/", name="dihedral", visible=False),
-        rrb.TimeSeriesView(origin="/rotations/", name="rotations", visible=False),
-        rrb.TimeSeriesView(origin="/frequency/", name="frequency", visible=True),
-
-    ),
-    collapse_panels=False,
-)
-
-
 def log_body_markers(df, i, marker_radius):
     for idx in range(1, 6):
         rr.log(
             f"/flapper/fb_body_{idx}",
             rr.Points3D(
                 [
-                    df[f"fb{idx}z"].iloc[i],
-                    df[f"fb{idx}x"].iloc[i],
-                    df[f"fb{idx}y"].iloc[i],
+                    df[f"{prepend}fb{idx}z"].iloc[i],
+                    df[f"{prepend}fb{idx}x"].iloc[i],
+                    df[f"{prepend}fb{idx}y"].iloc[i],
                 ],
                 colors=[0, 255, 0],
                 radii=[marker_radius],
@@ -110,7 +120,7 @@ def log_body_markers(df, i, marker_radius):
     rr.log(
         "/flapper/fb_body",
         rr.Points3D(
-            [df["fbz"].iloc[i], df["fbx"].iloc[i], df["fby"].iloc[i]],
+            [df[f"{prepend}fbz"].iloc[i], df[f"{prepend}fbx"].iloc[i], df[f"{prepend}fby"].iloc[i]],
             colors=[0, 255, 0],
             radii=[marker_radius],
         ),
@@ -123,28 +133,32 @@ def log_body_strips(df, i, line_radius):
         rr.LineStrips3D(
             [
                 [
-                    [df["fb1z"].iloc[i], df["fb1x"].iloc[i], df["fb1y"].iloc[i]],
-                    [df["fbz"].iloc[i], df["fbx"].iloc[i], df["fby"].iloc[i]],
-                    [df["fb2z"].iloc[i], df["fb2x"].iloc[i], df["fb2y"].iloc[i]],
-                    [df["fb3z"].iloc[i], df["fb3x"].iloc[i], df["fb3y"].iloc[i]],
-                    [df["fb5z"].iloc[i], df["fb5x"].iloc[i], df["fb5y"].iloc[i]],
-                    [df["fb4z"].iloc[i], df["fb4x"].iloc[i], df["fb4y"].iloc[i]],
-                    [df["fb2z"].iloc[i], df["fb2x"].iloc[i], df["fb2y"].iloc[i]],
+                    [df[f"{prepend}fb1z"].iloc[i], df[f"{prepend}fb1x"].iloc[i], df[f"{prepend}fb1y"].iloc[i]],
+                    [df[f"{prepend}fbz"].iloc[i], df[f"{prepend}fbx"].iloc[i], df[f"{prepend}fby"].iloc[i]],
+                    [df[f"{prepend}fb2z"].iloc[i], df[f"{prepend}fb2x"].iloc[i], df[f"{prepend}fb2y"].iloc[i]],
+                    [df[f"{prepend}fb3z"].iloc[i], df[f"{prepend}fb3x"].iloc[i], df[f"{prepend}fb3y"].iloc[i]],
+                    [df[f"{prepend}fb5z"].iloc[i], df[f"{prepend}fb5x"].iloc[i], df[f"{prepend}fb5y"].iloc[i]],
+                    [df[f"{prepend}fb4z"].iloc[i], df[f"{prepend}fb4x"].iloc[i], df[f"{prepend}fb4y"].iloc[i]],
+                    [df[f"{prepend}fb2z"].iloc[i], df[f"{prepend}fb2x"].iloc[i], df[f"{prepend}fb2y"].iloc[i]],
                 ],
                 [
-                    [df["fb3z"].iloc[i], df["fb3x"].iloc[i], df["fb3y"].iloc[i]],
-                    [df["fbz"].iloc[i], df["fbx"].iloc[i], df["fby"].iloc[i]],
-                    [df["fb4z"].iloc[i], df["fb4x"].iloc[i], df["fb4y"].iloc[i]],
+                    [df[f"{prepend}fb3z"].iloc[i], df[f"{prepend}fb3x"].iloc[i], df[f"{prepend}fb3y"].iloc[i]],
+                    [df[f"{prepend}fbz"].iloc[i], df[f"{prepend}fbx"].iloc[i], df[f"{prepend}fby"].iloc[i]],
+                    [df[f"{prepend}fb4z"].iloc[i], df[f"{prepend}fb4x"].iloc[i], df[f"{prepend}fb4y"].iloc[i]],
                 ],
                 [
-                    [df["fb5z"].iloc[i], df["fb5x"].iloc[i], df["fb5y"].iloc[i]],
-                    [df["fbz"].iloc[i], df["fbx"].iloc[i], df["fby"].iloc[i]],
+                    [df[f"{prepend}fb5z"].iloc[i], df[f"{prepend}fb5x"].iloc[i], df[f"{prepend}fb5y"].iloc[i]],
+                    [df[f"{prepend}fbz"].iloc[i], df[f"{prepend}fbx"].iloc[i], df[f"{prepend}fby"].iloc[i]],
                 ],
             ],
             radii=[line_radius, line_radius],
             colors=[[0, 255, 0], [0, 255, 0]],
         ),
     )
+
+    rr.log("/position/x", rr.Scalars(df[f"{prepend}fbx"].iloc[i]))
+    rr.log("/position/y", rr.Scalars(df[f"{prepend}fby"].iloc[i]))
+    rr.log("/position/z", rr.Scalars(df[f"{prepend}fbz"].iloc[i]))
 
 
 def log_wing_markers(df, i, wing, marker_radius):
@@ -153,9 +167,9 @@ def log_wing_markers(df, i, wing, marker_radius):
         f"/flapper/fb_{wing}_wing",
         rr.Points3D(
             [
-                df[f"fb{wing[0]}wz"].iloc[i],
-                df[f"fb{wing[0]}wx"].iloc[i],
-                df[f"fb{wing[0]}wy"].iloc[i],
+                df[f"{prepend}fb{wing[0]}wz"].iloc[i],
+                df[f"{prepend}fb{wing[0]}wx"].iloc[i],
+                df[f"{prepend}fb{wing[0]}wy"].iloc[i],
             ],
             colors=color,
             radii=[marker_radius],
@@ -166,9 +180,9 @@ def log_wing_markers(df, i, wing, marker_radius):
             f"/flapper/fb_{wing}_wing_{idx}",
             rr.Points3D(
                 [
-                    df[f"fb{wing[0]}w{idx}z"].iloc[i],
-                    df[f"fb{wing[0]}w{idx}x"].iloc[i],
-                    df[f"fb{wing[0]}w{idx}y"].iloc[i],
+                    df[f"{prepend}fb{wing[0]}w{idx}z"].iloc[i],
+                    df[f"{prepend}fb{wing[0]}w{idx}x"].iloc[i],
+                    df[f"{prepend}fb{wing[0]}w{idx}y"].iloc[i],
                 ],
                 colors=color,
                 radii=[marker_radius],
@@ -183,19 +197,19 @@ def log_wing_strips(df, i, wing, line_radius):
         rr.LineStrips3D(
             [
                 [
-                    df[f"fb{wing[0]}w1z"].iloc[i],
-                    df[f"fb{wing[0]}w1x"].iloc[i],
-                    df[f"fb{wing[0]}w1y"].iloc[i],
+                    df[f"{prepend}fb{wing[0]}w1z"].iloc[i],
+                    df[f"{prepend}fb{wing[0]}w1x"].iloc[i],
+                    df[f"{prepend}fb{wing[0]}w1y"].iloc[i],
                 ],
                 [
-                    df[f"fb{wing[0]}w2z"].iloc[i],
-                    df[f"fb{wing[0]}w2x"].iloc[i],
-                    df[f"fb{wing[0]}w2y"].iloc[i],
+                    df[f"{prepend}fb{wing[0]}w2z"].iloc[i],
+                    df[f"{prepend}fb{wing[0]}w2x"].iloc[i],
+                    df[f"{prepend}fb{wing[0]}w2y"].iloc[i],
                 ],
                 [
-                    df[f"fb{wing[0]}w3z"].iloc[i],
-                    df[f"fb{wing[0]}w3x"].iloc[i],
-                    df[f"fb{wing[0]}w3y"].iloc[i],
+                    df[f"{prepend}fb{wing[0]}w3z"].iloc[i],
+                    df[f"{prepend}fb{wing[0]}w3x"].iloc[i],
+                    df[f"{prepend}fb{wing[0]}w3y"].iloc[i],
                 ],
             ],
             radii=[line_radius, line_radius, line_radius],
@@ -205,14 +219,14 @@ def log_wing_strips(df, i, wing, line_radius):
 
 
 def log_body_axes(df, i, axes_radius):
-    origin = np.array([df["fbz"].iloc[i], df["fbx"].iloc[i], df["fby"].iloc[i]])
+    origin = np.array([df[f"{prepend}fbz"].iloc[i], df[f"{prepend}fbx"].iloc[i], df[f"{prepend}fby"].iloc[i]])
 
     quat = np.array(
         [
-            df["fbqz"].iloc[i],
-            df["fbqx"].iloc[i],
-            df["fbqy"].iloc[i],
-            df["fbqw"].iloc[i],
+            df[f"{prepend}fbqz"].iloc[i],
+            df[f"{prepend}fbqx"].iloc[i],
+            df[f"{prepend}fbqy"].iloc[i],
+            df[f"{prepend}fbqw"].iloc[i],
         ]
     )  # z, x, y for ForwardLeftUp reference frame
     r = R.from_quat(quat)
@@ -230,22 +244,22 @@ def log_body_axes(df, i, axes_radius):
 
 def log_dihedral_frequency(df, i):
     # Body orientation
-    body = np.array([df["fbz"].iloc[i], df["fbx"].iloc[i], df["fby"].iloc[i]])
-    top_marker = np.array([df["fb1z"].iloc[i], df["fb1x"].iloc[i], df["fb1y"].iloc[i]])
+    body = np.array([df[f"{prepend}fbz"].iloc[i], df[f"{prepend}fbx"].iloc[i], df[f"{prepend}fby"].iloc[i]])
+    top_marker = np.array([df[f"{prepend}fb1z"].iloc[i], df[f"{prepend}fb1x"].iloc[i], df[f"{prepend}fb1y"].iloc[i]])
 
     quat_body = np.array([
-        df["fbqz"].iloc[i],
-        df["fbqx"].iloc[i], 
-        df["fbqy"].iloc[i],
-        df["fbqw"].iloc[i],
+        df[f"{prepend}fbqz"].iloc[i],
+        df[f"{prepend}fbqx"].iloc[i], 
+        df[f"{prepend}fbqy"].iloc[i],
+        df[f"{prepend}fbqw"].iloc[i],
     ])
 
     r_body = R.from_quat(quat_body, scalar_first=False)
     forward_body = r_body.apply([0, 1, 0])  # Forward facing vector
 
     # RIGHT WING CALCULATIONS
-    wing_rootR = np.array([df["fbrwz"].iloc[i], df["fbrwx"].iloc[i], df["fbrwy"].iloc[i]])
-    wing_lastR = np.array([df["fbrw3z"].iloc[i], df["fbrw3x"].iloc[i], df["fbrw3y"].iloc[i]])
+    wing_rootR = np.array([df[f"{prepend}fbrwz"].iloc[i], df[f"{prepend}fbrwx"].iloc[i], df[f"{prepend}fbrwy"].iloc[i]])
+    wing_lastR = np.array([df[f"{prepend}fbrw3z"].iloc[i], df[f"{prepend}fbrw3x"].iloc[i], df[f"{prepend}fbrw3y"].iloc[i]])
 
     # Calculate wing plane normal
     BA_right = body - top_marker
@@ -275,8 +289,8 @@ def log_dihedral_frequency(df, i):
     dihedral_R = calculate_dihedral_angle(forward_body, norm_dihedral_right)
 
     # LEFT WING CALCULATIONS  
-    wing_rootL = np.array([df["fblwz"].iloc[i], df["fblwx"].iloc[i], df["fblwy"].iloc[i]])
-    wing_lastL = np.array([df["fblw3z"].iloc[i], df["fblw3x"].iloc[i], df["fblw3y"].iloc[i]])
+    wing_rootL = np.array([df[f"{prepend}fblwz"].iloc[i], df[f"{prepend}fblwx"].iloc[i], df[f"{prepend}fblwy"].iloc[i]])
+    wing_lastL = np.array([df[f"{prepend}fblw3z"].iloc[i], df[f"{prepend}fblw3x"].iloc[i], df[f"{prepend}fblw3y"].iloc[i]])
 
     # Calculate wing plane normal
     BA_left = body - top_marker
@@ -313,76 +327,78 @@ if __name__ == "__main__":
     # Load the data from a CSV file
     names = [
         "time",
-        "fbqx",
-        "fbqy",
-        "fbqz",
-        "fbqw",
-        "fbx",
-        "fby",
-        "fbz",
-        "fb1x",
-        "fb1y",
-        "fb1z",
-        "fb2x",
-        "fb2y",
-        "fb2z",
-        "fb3x",
-        "fb3y",
-        "fb3z",
-        "fb4x",
-        "fb4y",
-        "fb4z",
-        "fb5x",
-        "fb5y",
-        "fb5z",
-        "fbrwqx",
-        "fbrwqy",
-        "fbrwqz",
-        "fbrwqw",
-        "fbrwx",
-        "fbrwy",
-        "fbrwz",
-        "fbrw1x",
-        "fbrw1y",
-        "fbrw1z",
-        "fbrw2x",
-        "fbrw2y",
-        "fbrw2z",
-        "fbrw3x",
-        "fbrw3y",
-        "fbrw3z",
-        "fblwqx",
-        "fblwqy",
-        "fblwqz",
-        "fblwqw",
-        "fblwx",
-        "fblwy",
-        "fblwz",
-        "fblw1x",
-        "fblw1y",
-        "fblw1z",
-        "fblw2x",
-        "fblw2y",
-        "fblw2z",
-        "fblw3x",
-        "fblw3y",
-        "fblw3z",
+        f"{prepend}fbqx",
+        f"{prepend}fbqy",
+        f"{prepend}fbqz",
+        f"{prepend}fbqw",
+        f"{prepend}fbx",
+        f"{prepend}fby",
+        f"{prepend}fbz",
+        f"{prepend}fb1x",
+        f"{prepend}fb1y",
+        f"{prepend}fb1z",
+        f"{prepend}fb2x",
+        f"{prepend}fb2y",
+        f"{prepend}fb2z",
+        f"{prepend}fb3x",
+        f"{prepend}fb3y",
+        f"{prepend}fb3z",
+        f"{prepend}fb4x",
+        f"{prepend}fb4y",
+        f"{prepend}fb4z",
+        f"{prepend}fb5x",
+        f"{prepend}fb5y",
+        f"{prepend}fb5z",
+        f"{prepend}fbrwqx",
+        f"{prepend}fbrwqy",
+        f"{prepend}fbrwqz",
+        f"{prepend}fbrwqw",
+        f"{prepend}fbrwx",
+        f"{prepend}fbrwy",
+        f"{prepend}fbrwz",
+        f"{prepend}fbrw1x",
+        f"{prepend}fbrw1y",
+        f"{prepend}fbrw1z",
+        f"{prepend}fbrw2x",
+        f"{prepend}fbrw2y",
+        f"{prepend}fbrw2z",
+        f"{prepend}fbrw3x",
+        f"{prepend}fbrw3y",
+        f"{prepend}fbrw3z",
+        f"{prepend}fblwqx",
+        f"{prepend}fblwqy",
+        f"{prepend}fblwqz",
+        f"{prepend}fblwqw",
+        f"{prepend}fblwx",
+        f"{prepend}fblwy",
+        f"{prepend}fblwz",
+        f"{prepend}fblw1x",
+        f"{prepend}fblw1y",
+        f"{prepend}fblw1z",
+        f"{prepend}fblw2x",
+        f"{prepend}fblw2y",
+        f"{prepend}fblw2z",
+        f"{prepend}fblw3x",
+        f"{prepend}fblw3y",
+        f"{prepend}fblw3z",
     ]
-    df = pd.read_csv(
-        data_path,
-        skiprows=7,
-        usecols=range(1, len(names) + 1),
-        names=names,
-        header=None,
-    )
+    if RUN_PROCESSED:
+        df = pd.read_csv(data_path)
+    else:
+        df = pd.read_csv(
+            data_path,
+            skiprows=7,
+            usecols=range(1, len(names) + 1),
+            names=names,
+            header=None,
+        )
+        
     df = df.iloc[0:7500, :]
 
     rr.init("rerun_flapper", spawn=True)
     rr.send_blueprint(blueprint)
 
     df = handle_nan(df, 100, 2)
-    filtered_optitrack = filter_data(df, 8, 100)
-    processed_optitrack = process_optitrack(filtered_optitrack, "ForwardRightDown", np.array([0, 0, 0.6]))
 
     for i in range(len(df)):
         rr.set_time("time", timestamp=df["time"].iloc[i])
@@ -396,9 +412,9 @@ if __name__ == "__main__":
         log_dihedral_frequency(df, i)
 
 
-        rr.log("/rotations/pitch", rr.Scalars(processed_optitrack["pitch"].loc[i]))
-        rr.log("/rotations/roll", rr.Scalars(processed_optitrack["roll"].loc[i]))
-        rr.log("/rotations/yaw", rr.Scalars(processed_optitrack["yaw"].loc[i]))
+        rr.log("/pwm_inputs/left_pwm", rr.Scalars(df["onboard.motor.m2"].iloc[i]))
+
+
 
 
 
