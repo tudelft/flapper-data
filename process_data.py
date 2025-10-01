@@ -15,9 +15,9 @@ FREQ_RANGE = (0, 25)
 # OptiTrack z,x,y --> x,y,z
 
 # Select the flight number
-flight_exp = "flight_001"
+flight_exp = "flight_001" 
 onboard_freq = 500  # Hz
-filter_cutoff_freq = 5 # Hz
+filter_cutoff_freq = 45 # Hz
 FILTER_BOOL = False
 g0 = 9.80665  # m/s
 
@@ -260,11 +260,12 @@ def process_optitrack(data, com_body):
         oriented_data: pandas.DataFrame
     """
     
-    body_pos_ref = np.asarray([data["fbx"], data["fbz"], -data["fby"]])  # (3, N)
+    body_pos_ref = np.asarray([data["fbz"], data["fbx"], data["fby"]])  # (3, N)
     wing_rootR_ref = np.array([data["fbrwz"], data["fbrwx"], data["fbrwy"]])
     wing_lastR_ref = np.array([data["fbrw3z"], data["fbrw3x"], data["fbrw3y"]])
     wing_rootL_ref = np.array([data["fblwz"], data["fblwx"], data["fblwy"]])
     wing_lastL_ref = np.array([data["fblw3z"], data["fblw3x"], data["fblw3y"]])
+
     top_body_marker_ref = np.array([data["fb1z"], data["fb1x"], data["fb1y"]])
     
     
