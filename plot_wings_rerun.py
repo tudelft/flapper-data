@@ -74,15 +74,16 @@ blueprint = rrb.Blueprint(
 def calculate_flapping_frequency(signal_window, sample_rate=100, fft_size=256, freq_range=(5, 25)):
     """Calculate dominant frequency from signal window using FFT"""
     signal = signal_window - np.mean(signal_window)
-    
+
     # Apply zero-padding
     padded_signal = np.zeros(fft_size)
     padded_signal[:len(signal)] = signal
+
     
     # Compute FFT
     freqs = np.fft.fftfreq(fft_size, 1/sample_rate)
     fft_vals = np.abs(np.fft.fft(padded_signal))
-    
+
     # Find dominant frequency in specified range
     mask = (freqs >= freq_range[0]) & (freqs <= freq_range[1])
     valid_freqs = freqs[mask]
@@ -268,12 +269,15 @@ def log_dihedral_frequency(df, i):
 
     # Calculate flapping angle
     right_wing_vector = wing_lastR - wing_rootR
+
+    
     flapping_angle_R = np.arcsin(
         np.dot(right_wing_vector, norm_dihedral_right) / 
         (np.linalg.norm(right_wing_vector) * np.linalg.norm(norm_dihedral_right))
     )
     angle_values_R.append(flapping_angle_R)
 
+    
     # Calculate frequency for right wing
     if len(angle_values_R) >= WINDOW_SIZE:
         dominant_freq_R = calculate_flapping_frequency(
@@ -282,6 +286,7 @@ def log_dihedral_frequency(df, i):
             TARGET_FFT_SIZE, 
             FREQ_RANGE
         )
+
         if dominant_freq_R is not None:
             rr.log("/frequency/frequency_right", rr.Scalars(dominant_freq_R))
 
@@ -313,12 +318,14 @@ def log_dihedral_frequency(df, i):
             TARGET_FFT_SIZE,
             FREQ_RANGE
         )
+
         if dominant_freq_L is not None:
             rr.log("/frequency/frequency_left", rr.Scalars(dominant_freq_L))
 
     # Calculate dihedral angle for left wing
     dihedral_L = calculate_dihedral_angle(forward_body, norm_dihedral_left)
 
+    
     rr.log("/dihedral/dihedral_L", rr.Scalars(dihedral_L))
     rr.log("/dihedral/dihedral_R", rr.Scalars(dihedral_R))
 
@@ -393,7 +400,7 @@ if __name__ == "__main__":
             header=None,
         )
         
-    df = df.iloc[0:7500, :]
+    df = df.iloc[800:-1000, :]
 
     rr.init("rerun_flapper", spawn=True)
     rr.send_blueprint(blueprint)
@@ -409,11 +416,11 @@ if __name__ == "__main__":
         log_wing_strips(df, i, "right", line_radius)
         log_wing_strips(df, i, "left", line_radius)
         log_body_axes(df, i, axes_radius)
-        log_dihedral_frequency(df, i)
+        # log_dihedral_frequency(df, i)
 
 
         rr.log("/pwm_inputs/left_pwm", rr.Scalars(df["onboard.motor.m2"].iloc[i]))
-
+        rr.log("/frequency/frequency_left", rr.Scalars(df["optitrack.freq.left"].iloc[i]))
 
 
 

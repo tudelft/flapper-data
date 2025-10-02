@@ -9,16 +9,15 @@ import os
 
 WINDOW_SIZE = 16
 TARGET_FFT_SIZE = 256
-FREQ_RANGE = (0, 25)
+FREQ_RANGE = (5, 25)
 
 
 # OptiTrack z,x,y --> x,y,z
 
 # Select the flight number
-flight_exp = "flight_001" 
+flight_exp = "flight_002" 
 onboard_freq = 500  # Hz
-filter_cutoff_freq = 45 # Hz
-FILTER_BOOL = False
+filter_cutoff_freq = 5 # Hz
 g0 = 9.80665  # m/s
 
 # Columns to use to sync the optitrack and IMU data
@@ -137,40 +136,48 @@ def calculate_dihedral_angle(forward_body, norm_dihedral):
     signs = np.where(cross_products[:, 2] >= 0, 1, -1)
     return angles * signs
 
-def calculate_frequency(norm_dihedral, wing_vector, sample_rate=100, window_size=256, freq_range=(5, 25)):
+def align_to_original_length(dominant_freqs, N, window_size):
+    aligned = np.full(N, 0)  # same length as original
+    offset = window_size // 2
+    aligned[offset:offset+len(dominant_freqs)] = dominant_freqs
+    return aligned
+
+def calculate_frequency(norm_dihedral, wing_vector, sample_rate=100, window_size=16, fft_size=256, freq_range=(5, 25)):
 
     dot = np.einsum('ij,ij->i', wing_vector, norm_dihedral)
 
+    wing_norms = np.linalg.norm(wing_vector, axis=1)
+
+    dihedral_norms = np.linalg.norm(norm_dihedral, axis=1)
+
     flapping_angle = np.arcsin(
         dot / 
-        (np.linalg.norm(wing_vector) * np.linalg.norm(norm_dihedral))
+        (wing_norms * dihedral_norms)
     )
 
-    signal = flapping_angle - np.mean(flapping_angle)
-
-    windows = np.lib.stride_tricks.sliding_window_view(signal, window_size)
+    flapping_windows = np.lib.stride_tricks.sliding_window_view(flapping_angle, window_size)
+    windows = flapping_windows - flapping_windows.mean(axis=1, keepdims=True)
     
     # Zero-pad each window to fft_size
-    padded = np.zeros((windows.shape[0], window_size))
-    padded[:, :window_size] = windows
+    padded_signal = np.zeros((windows.shape[0], fft_size))
+    padded_signal[:, :window_size] = windows
 
     # FFT for all windows at once
-    fft_vals = np.fft.fft(padded, axis=1)
-    freqs = np.fft.fftfreq(window_size, 1/sample_rate)
+    freqs = np.fft.fftfreq(fft_size, 1/sample_rate)
+    fft_vals = np.abs(np.fft.fft(padded_signal, axis=1))
 
     # Restrict to target frequency range
     mask = (freqs >= freq_range[0]) & (freqs <= freq_range[1])
     valid_freqs = freqs[mask]
-    valid_fft = np.abs(fft_vals[:, mask])
+    valid_fft = fft_vals[:, mask]
 
     # Pick dominant frequency per window
     dominant_idx = np.argmax(valid_fft, axis=1)
     dominant_freqs = valid_freqs[dominant_idx]
 
-    result = np.full(len(signal), np.nan)
-    result[:len(dominant_freqs)] = dominant_freqs
+    aligned_dominant = align_to_original_length(dominant_freqs, len(norm_dihedral), window_size)
 
-    return result
+    return aligned_dominant
 
 
 def handle_nan(data, frame_rate, time_limit):
@@ -352,7 +359,7 @@ def process_optitrack(data, com_body):
     norm_dihedral_right = np.cross(BA_right.T, BC_right.T)
     right_wing_vector = (wing_lastR_ref - wing_rootR_ref).T
 
-    freq_right = calculate_frequency(norm_dihedral_right, right_wing_vector, optitrack_fps, WINDOW_SIZE, FREQ_RANGE)
+    freq_right = calculate_frequency(norm_dihedral_right, right_wing_vector, optitrack_fps, WINDOW_SIZE, TARGET_FFT_SIZE,  FREQ_RANGE)
     dihedral_right = calculate_dihedral_angle(forward_body, norm_dihedral_right)
 
     BA_left = body_pos_ref - top_body_marker_ref
@@ -360,7 +367,7 @@ def process_optitrack(data, com_body):
     norm_dihedral_left = np.cross(BA_left.T, BC_left.T)
     left_wing_vector = (wing_lastL_ref - wing_rootL_ref).T
 
-    freq_left = calculate_frequency(norm_dihedral_left, left_wing_vector, optitrack_fps, WINDOW_SIZE, FREQ_RANGE)
+    freq_left = calculate_frequency(norm_dihedral_left, left_wing_vector, optitrack_fps, WINDOW_SIZE, TARGET_FFT_SIZE, FREQ_RANGE)
     dihedral_left = calculate_dihedral_angle(forward_body, norm_dihedral_left)
 
     processed_data = pd.DataFrame(
@@ -525,6 +532,7 @@ def orient_onboard(data, sampling_freq, time_shift):
             "acc.y": data["acc.y"],
             "acc.z": data["acc.z"],
         }
+
     )
 
     time_array = np.round(np.arange(0, len(data["timestamp"]) / sampling_freq, 1 / sampling_freq), 5)
