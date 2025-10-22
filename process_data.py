@@ -46,7 +46,7 @@ def get_optitrack_meta(optitrack_csv):
         print("The code has not been tested with this Optitrack file version")
 
     fps = float(metadata["Capture Frame Rate"])
-    print(f"Optitrack data recorded at {fps} fps")
+    print(f"Found .csv ... optitrack data recorded at {fps} fps")
 
     return metadata
 
@@ -664,11 +664,11 @@ if __name__ == "__main__":
 
 
 
-    # Save merged DataFrame
+    # # Save merged DataFrame
     # os.makedirs(os.path.dirname(config.processed_path), exist_ok=True)
     # processed_merged.to_csv(f"{config.processed_path}/{config.flight_exp}-processed.csv", index=False)
 
-    # Process the onboard data at 500 Hz
+    # # Process the onboard data at 500 Hz
     # onboard_data = pd.read_csv(onboard_csv, header=0, names=names_onboard)
     # oriented_data = orient_onboard(onboard_data, onboard_freq, time_shift)
     # oriented_data.to_csv(
