@@ -24,7 +24,7 @@ FREE_FLIGHT = False
 
 # OptiTrack z,x,y --> x,y,z
 
-onboard_freq = 500  # Hz
+onboard_freq = 360  # Hz
 filter_cutoff_freq = 2  # Hz
 g0 = 9.80665  # m/s
 
@@ -222,8 +222,10 @@ def process_optitrack(data, com_body):
 
     r = R.from_quat(quats, scalar_first=False)
 
+    # Optitrack defines Z-up, Y-left, X-forward
+
     # Optitrack defines Y-up, Z-right, X-forward
-    euler_angles = r.as_euler("YZX", degrees=False)
+    euler_angles = r.as_euler("YXZ", degrees=False)
 
     # First extract yaw, pitch and then roll
     psi, theta, phi = -euler_angles[:, 0], euler_angles[:, 1], euler_angles[:, 2]
@@ -587,7 +589,7 @@ if __name__ == "__main__":
     # Process the optitrack data
     optitrack_processed = process_optitrack(optitrack_data_nonan, body_to_CoM)
 
-
+    print(onboard_data["timestamp"].diff().mean())
     
 
     # Filtering
@@ -604,27 +606,21 @@ if __name__ == "__main__":
     # Match the data
     lag = sync_timestamps(onboard_sampled, optitrack_filtered, columns_sync)
 
-    import matplotlib.pyplot as plt
-
-    plt.plot(optitrack_filtered["pitch"], label="pitch")
-    plt.plot(optitrack_filtered["roll"], label="roll")
-    plt.plot(optitrack_filtered["yaw"], label="yaw")
-    plt.legend()
-    # plt.plot(onboard_processed["p"])
-    plt.show()
 
     
-    # # Shift the optitrack data
-    # optitrack_processed_shifted, time_shift = shift_data(
-    #     optitrack_filtered, lag, optitrack_fps
-    # )
+    # Shift the optitrack data
+    optitrack_processed_shifted, time_shift = shift_data(
+        optitrack_filtered, lag, optitrack_fps
+    )
 
+    plt.plot(onboard_sampled["pitch"])
+    plt.plot(optitrack_filtered["pitch"])
+    plt.show()
 
     # # Merge synced DataFrames
     # processed_merged = merge_dfs(
     #     onboard_sampled, optitrack_processed_shifted, optitrack_fps
     # )
-
 
 
 

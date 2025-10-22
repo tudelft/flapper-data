@@ -1,7 +1,7 @@
 GUIDED_FLIGHT = True # uses columns names for the guided flights
 RUN_PROCESSED = False
 
-flight_exp = "yaw1"
+flight_exp = "longitudinal1"
 
 processed_path = f"data/processed/{flight_exp}/"
 
