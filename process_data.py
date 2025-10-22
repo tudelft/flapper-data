@@ -4,6 +4,7 @@ from scipy.spatial.transform import Rotation as R
 from math import gcd
 from scipy import signal
 import matplotlib.pyplot as plt
+from scipy.integrate import cumulative_trapezoid
 from utils.state_estimator import MahonyIMU
 import os
 
@@ -432,7 +433,9 @@ def process_onboard(data, sampling_freq):
 
     acc_x = -(data["acc.x"] - np.sin(attitude["pitch"]))*g0
     acc_y = -(data["acc.y"] + np.sin(attitude["roll"])*np.cos(attitude["pitch"]))*g0
-    acc_z = (data["acc.z"] - np.cos(attitude["roll"])*np.cos(attitude["pitch"]))*g0
+    acc_z = -(data["acc.z"] - np.cos(attitude["roll"])*np.cos(attitude["pitch"]))*g0
+
+    vel_z = cumulative_trapezoid(acc_z, dx=1 / sampling_freq, initial=0)
 
 
     processed_data = pd.DataFrame(
@@ -461,6 +464,9 @@ def process_onboard(data, sampling_freq):
             "p_dot": roll_acc,
             "q_dot": pitch_acc,
             "r_dot": yaw_acc,
+            "vel.x" : 0,
+            "vel.y":0,
+            "vel.z": vel_z,
             "acc.x": acc_x,
             "acc.y": acc_y,
             "acc.z": acc_z,
