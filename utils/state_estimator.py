@@ -37,7 +37,9 @@ class MahonyIMU:
             halfez = ax * halfvy - ay * halfvx
 
             if self.two_ki > 0:
-                self.integralFBx += self.two_ki * halfex * dt  # integral error scaled by Ki
+                self.integralFBx += (
+                    self.two_ki * halfex * dt
+                )  # integral error scaled by Ki
                 self.integralFBy += self.two_ki * halfey * dt
                 self.integralFBz += self.two_ki * halfez * dt
                 gx += self.integralFBx  # apply integral feedback
@@ -67,7 +69,12 @@ class MahonyIMU:
         self.qz += qa * gz + qb * gy - qc * gx
 
         # Normalise quaternion
-        recipNorm = 1 / np.sqrt(self.qw * self.qw + self.qx * self.qx + self.qy * self.qy + self.qz * self.qz)
+        recipNorm = 1 / np.sqrt(
+            self.qw * self.qw
+            + self.qx * self.qx
+            + self.qy * self.qy
+            + self.qz * self.qz
+        )
         self.qw *= recipNorm
         self.qx *= recipNorm
         self.qy *= recipNorm

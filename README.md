@@ -8,3 +8,7 @@ All the values in the columns "onboard. ..." are in degrees, while the ones rela
 Figure out whether the onboard oriented data should be returned in degrees or radians, keep in mind all the controllers on the flapper work with degrees. 
 
 I think return everything in radians, transform in degreees inside the function in flapper_model.py in my personal repo.
+
+# Explanation of process_data.py
+
+```process_onboard()```, 
