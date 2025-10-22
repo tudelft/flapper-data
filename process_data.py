@@ -24,12 +24,12 @@ FREE_FLIGHT = False
 
 # OptiTrack z,x,y --> x,y,z
 
-onboard_freq = 360  # Hz
+onboard_freq = 200  # Hz
 filter_cutoff_freq = 2  # Hz
 g0 = 9.80665  # m/s
 
 # Columns to use to sync the optitrack and IMU data
-columns_sync = ["p", "q", "r"]
+columns_sync = ["pitch",]
 
 body_to_CoM = np.array([0, 0, -0.20])
 
@@ -147,21 +147,22 @@ def handle_nan(data, frame_rate, time_limit):
     return interpolated_data
 
 
-def resample_data(data, up, down):
+def resample_data(data, up, down, fs_original):
     columns_name = data.columns[1:]
     g = gcd(up, down)
     up //= g
     down //= g
 
-    data = signal.resample_poly(data.iloc[:, 1:], up, down)
+    original_N = len(data)
+    duration = (original_N - 1) / fs_original
 
-    data = pd.DataFrame(data, columns=columns_name)
+    data_resampled = signal.resample_poly(data.iloc[:, 1:], up, down)
+    data_resampled = pd.DataFrame(data_resampled, columns=columns_name)
 
-    time_array = np.round(np.linspace(0, data.shape[0] / 100, data.shape[0]), 2)
+    time_array = np.linspace(0, duration, len(data_resampled))
+    data_resampled.insert(0, "time", time_array)
 
-    data.insert(0, "time", time_array)
-
-    return data
+    return data_resampled
 
 
 def filter_data(data, cutoff_freq, sampling_freq):
@@ -228,7 +229,7 @@ def process_optitrack(data, com_body):
     euler_angles = r.as_euler("YXZ", degrees=False)
 
     # First extract yaw, pitch and then roll
-    psi, theta, phi = -euler_angles[:, 0], euler_angles[:, 1], euler_angles[:, 2]
+    psi, theta, phi = -euler_angles[:, 0], -euler_angles[:, 1], euler_angles[:, 2]
 
     oriented_euler = np.asarray([phi, theta, psi])
 
@@ -451,13 +452,22 @@ def process_onboard(data, sampling_freq):
 
 
 def sync_timestamps(onboard, optitrack, columns_sync):
-    x = onboard[columns_sync].values
-    y = optitrack[columns_sync].values
-
+    # Extract single column as 1D array
+    x = onboard[columns_sync[0]].values
+    y = optitrack[columns_sync[0]].values
+    
+    # Normalize the signals (helps with correlation)
+    x = (x - np.mean(x)) / np.std(x)
+    y = (y - np.mean(y)) / np.std(y)
+    
     correlation = signal.correlate(x, y, mode="full")
     lags = signal.correlation_lags(x.size, y.size, mode="full")
     lag = lags[np.argmax(correlation)]
-
+    
+    # Debug: print correlation strength
+    max_corr = np.max(correlation)
+    print(f"Lag: {lag} samples, Max correlation: {max_corr:.4f}")
+    
     return lag
 
 
@@ -481,10 +491,19 @@ def merge_dfs(onboard, optitrack, sampling_freq):
         columns={col: f"optitrack.{col}" for col in optitrack.columns if col != "time"}
     )
 
-    merged = pd.merge(onboard, optitrack, on="time", how="inner")
-
-    print(merged.iloc[-1, :])
-
+    # Use merge_asof for nearest time matching
+    merged = pd.merge_asof(
+        onboard.sort_values('time'), 
+        optitrack.sort_values('time'), 
+        on="time", 
+        direction="nearest",
+        tolerance=1/(2*sampling_freq)  # Allow matching within half a sample period
+    )
+    
+    # Remove any rows with NaN (outside tolerance)
+    merged = merged.dropna()
+    
+    # Recreate uniform time array
     num_samples = len(merged)
     merged["time"] = np.round(
         np.linspace(0, (num_samples - 1) / sampling_freq, num_samples),
@@ -525,15 +544,13 @@ def orient_onboard(data, sampling_freq, time_shift):
         }
     )
 
-    time_array = np.round(
-        np.arange(0, len(data["timestamp"]) / sampling_freq, 1 / sampling_freq), 5
-    )
+    time_array = np.arange(0, len(oriented_data) / sampling_freq, 1 / sampling_freq)
 
     idx = np.argmin(np.abs(time_array - time_shift))
 
     oriented_data = oriented_data.iloc[idx:, :]
 
-    time_array =  np.arange(0, len(oriented_data) / sampling_freq, 1 / sampling_freq), 5
+    time_array =  np.arange(0, len(oriented_data) / sampling_freq, 1 / sampling_freq)
 
 
     oriented_data.insert(0, "time", time_array)
@@ -575,6 +592,7 @@ if __name__ == "__main__":
     # print(config.onboard_path, config.onboard_cols)
     onboard_data = pd.read_csv(config.onboard_path, header=0, names=config.onboard_cols)
 
+
     # print(onboard_data.head())
     # Get Optitrack meta data
     optitrack_meta = get_optitrack_meta(config.optitrack_path)
@@ -588,24 +606,24 @@ if __name__ == "__main__":
     onboard_processed = process_onboard(onboard_data_nonan, onboard_freq)
     # Process the optitrack data
     optitrack_processed = process_optitrack(optitrack_data_nonan, body_to_CoM)
-
-    print(onboard_data["timestamp"].diff().mean())
+    
+    
     
 
     # Filtering
     # Filter the onboard data
     onboard_filtered = filter_data(onboard_processed, filter_cutoff_freq, onboard_freq)
+    
     # Filter the optitrack data
     optitrack_filtered = filter_data(
         optitrack_processed, filter_cutoff_freq, optitrack_fps
     )
 
     # Resample the onboard data down to optitrack_fps
-    onboard_sampled = resample_data(onboard_filtered, optitrack_fps, onboard_freq)
+    onboard_sampled = resample_data(onboard_filtered, optitrack_fps, onboard_freq, onboard_freq)
  
     # Match the data
     lag = sync_timestamps(onboard_sampled, optitrack_filtered, columns_sync)
-
 
     
     # Shift the optitrack data
@@ -613,14 +631,36 @@ if __name__ == "__main__":
         optitrack_filtered, lag, optitrack_fps
     )
 
-    plt.plot(onboard_sampled["pitch"])
-    plt.plot(optitrack_filtered["pitch"])
-    plt.show()
+    # print(time_shift)
+    
 
     # # Merge synced DataFrames
-    # processed_merged = merge_dfs(
-    #     onboard_sampled, optitrack_processed_shifted, optitrack_fps
-    # )
+    processed_merged = merge_dfs(
+        onboard_sampled, optitrack_processed_shifted, optitrack_fps
+    )
+
+
+    
+    # After calculating lag
+    print(f"Lag: {lag} samples = {lag/optitrack_fps:.3f} seconds")
+
+    # Plot to verify
+    fig, axes = plt.subplots(2, 1, figsize=(12, 6))
+    axes[0].plot(onboard_sampled["time"], onboard_sampled[columns_sync[0]], label="Onboard")
+    axes[0].plot(optitrack_filtered["time"], optitrack_filtered[columns_sync[0]], label="OptiTrack")
+    axes[0].legend()
+    axes[0].set_title("Before Sync")
+
+    # After shifting
+    axes[1].plot(processed_merged["time"], processed_merged[f"onboard.{columns_sync[0]}"], label="Onboard")
+    axes[1].plot(processed_merged["time"], processed_merged[f"optitrack.{columns_sync[0]}"], label="OptiTrack (shifted)")
+    axes[1].legend()
+    axes[1].set_title("After Sync")
+    plt.tight_layout()
+    plt.show()
+
+
+
 
 
 
