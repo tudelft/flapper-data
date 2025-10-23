@@ -16,6 +16,8 @@ from utils.state_estimator import MahonyIMU
 import os
 import config
 
+
+
 WINDOW_SIZE = 16
 TARGET_FFT_SIZE = 256
 FREQ_RANGE = (5, 25)
@@ -29,9 +31,12 @@ filter_cutoff_freq = 2  # Hz
 g0 = 9.80665  # m/s
 
 # Columns to use to sync the optitrack and IMU data
-columns_sync = ["pitch",]
+columns_sync = ["acc.z",]
+show = False
 
-body_to_CoM = np.array([0, 0, -0.20])
+
+
+body_to_CoM = np.array([0, 0, 0.20])
 
 def get_optitrack_meta(optitrack_csv):
     print("Obtaining the optitrack metadata ...")
@@ -173,22 +178,20 @@ def filter_data(data, cutoff_freq, sampling_freq):
 
     columns_name = data.columns
 
-    b, a = signal.butter(2, cutoff_freq, fs=sampling_freq)
+    b, a = signal.butter(4, cutoff_freq, fs=sampling_freq)
 
     filtered_data = signal.filtfilt(b, a, data.iloc[:, 1:], axis=0)
 
     filtered_df = pd.DataFrame(filtered_data, columns=columns_name[1:])
 
-    time_array = np.round(
-        np.linspace(0, filtered_df.shape[0] / sampling_freq, filtered_df.shape[0]), 2
-    )
+    time_array = np.linspace(0, filtered_df.shape[0] / sampling_freq, filtered_df.shape[0])
 
     filtered_df.insert(0, "time", time_array)
 
     return filtered_df
 
 
-def process_optitrack(data, com_body):
+def process_optitrack(data, com_body, optitrack_fps):
     """
     Orients the optitrack data to the correct body orientation. Optitrack defines body axes
     as RightForwardUp respectively for x, y, z. Thus use a Euler intrinsic rotation, 'yxz',
@@ -210,7 +213,7 @@ def process_optitrack(data, com_body):
         oriented_data: pandas.DataFrame
     """
 
-    body_pos_ref = np.asarray([data["fbz"], data["fbx"], data["fby"]])  # (3, N)
+    
     wing_rootR_ref = np.array([data["fbrwz"], data["fbrwx"], data["fbrwy"]])
     wing_lastR_ref = np.array([data["fbrw3z"], data["fbrw3x"], data["fbrw3y"]])
     wing_rootL_ref = np.array([data["fblwz"], data["fblwx"], data["fblwy"]])
@@ -221,15 +224,19 @@ def process_optitrack(data, com_body):
     # Rotational kinematics
     quats = np.vstack((data["fbqx"], data["fbqy"], data["fbqz"], data["fbqw"])).T
 
+    # Compute the norm (length) of each quaternion (row-wise)
+    norms = np.linalg.norm(quats, axis=1, keepdims=True)
+
+    # Normalize each quaternion
+    quats = quats / norms
+
     r = R.from_quat(quats, scalar_first=False)
 
     # Optitrack defines Z-up, Y-left, X-forward
-
-    # Optitrack defines Y-up, Z-right, X-forward
     euler_angles = r.as_euler("YXZ", degrees=False)
 
     # First extract yaw, pitch and then roll
-    psi, theta, phi = -euler_angles[:, 0], -euler_angles[:, 1], euler_angles[:, 2]
+    psi, theta, phi = -euler_angles[:, 0], -euler_angles[:, 1], euler_angles[:, 2] # all checked correct orientation
 
     oriented_euler = np.asarray([phi, theta, psi])
 
@@ -248,14 +255,19 @@ def process_optitrack(data, com_body):
         "ijk,jk->ik", rotations_rates, euler_rates
     )  # (N,), (N,), (N,)
 
+    
     rates_body_wrt_ref = np.asarray([roll_rate, pitch_rate, yaw_rate])  # (3, N)
 
     alpha_body_wrt_ref = np.gradient(rates_body_wrt_ref, data["time"], axis=1)  # (3, N)
 
-    # Now move onto translational kinematics
+
+    # Now move onto translational kinematics, Optitrack defines Z-up, Y-left, X-forward
+    body_pos_ref = np.asarray([data["fbz"], -data["fbx"], -data["fby"]])  # (3, N)
+
     vel_ref = np.gradient(body_pos_ref, data["time"], axis=1)  # (3, N)
 
     acc_ref = np.gradient(vel_ref, data["time"], axis=1)  # (3, N)
+
 
     # Position of the CoM in body frame
     pos_com_ref = body_pos_ref + com_body[:, np.newaxis]  # reshape com_body to (3, N)
@@ -301,9 +313,7 @@ def process_optitrack(data, com_body):
     vely_com_body = 0
     velz_com_body = 0
 
-    accx_com_body = 0
-    accy_com_body = 0
-    accz_com_body = 0
+    accx_com_body, accy_com_body, accz_com_body = np.einsum("ijk,jk->ik", rotations_BodyToRef.transpose(1, 0, 2), acc_com_ref)
 
     # Compute and process the flapping frequency
 
@@ -351,9 +361,9 @@ def process_optitrack(data, com_body):
             "p_dot": alpha_body_wrt_ref[0, :],
             "q_dot": alpha_body_wrt_ref[1, :],
             "r_dot": alpha_body_wrt_ref[2, :],
-            "acc.x": accx_com_body,
-            "acc.y": accy_com_body,
-            "acc.z": accz_com_body,
+            "acc.x": acc_ref[0],
+            "acc.y": acc_ref[1],
+            "acc.z": acc_ref[2],
             "freq.right": freq_right,
             "freq.left": freq_left,
             "dihedral.right": dihedral_right,
@@ -364,7 +374,7 @@ def process_optitrack(data, com_body):
     # Include all the markers position in the processed dataframe
     processed_data = pd.concat([processed_data, data.iloc[:, 1:]], axis=1)
 
-    return processed_data
+    return processed_data   
 
 
 def process_onboard(data, sampling_freq):
@@ -375,15 +385,6 @@ def process_onboard(data, sampling_freq):
     Return:
         - Processed dataframe with all angle values in radians, and correctly oriented in the aerospace reference frane NED
     """
-
-
-    # Create a uniform time array
-    time_array = np.round(
-        np.linspace(0, data.shape[0] / sampling_freq, data.shape[0]), 2
-    )
-
-    data.insert(0, "time", time_array)
-
     estimator = MahonyIMU()
 
     attitude = {"pitch": [], "roll": [], "yaw": []}
@@ -414,10 +415,20 @@ def process_onboard(data, sampling_freq):
     pitch_acc = np.gradient(q, 1 / sampling_freq)
     yaw_acc = np.gradient(r, 1 / sampling_freq)
 
-    # translational accelerations
-    acc_x = - (data["acc.x"] - np.sin(attitude["pitch"])) * g0
-    acc_y = - (data["acc.y"] + np.sin(attitude["roll"]) * np.cos(attitude["pitch"])) * g0
-    acc_z = - (data["acc.z"] - np.cos(attitude["roll"]) * np.cos(attitude["pitch"])) * g0
+
+    # translational accelerations ->> check how this behaves
+    acc_x = data["acc.x"]
+    acc_y = - data["acc.y"]
+    acc_z = - data["acc.z"]
+
+
+    acc_x = acc_x * g0 - np.sin(attitude["pitch"]) * g0 
+    acc_y = acc_y * g0 + np.sin(attitude["roll"]) * np.cos(attitude["pitch"]) * g0
+    acc_z = acc_z * g0 + np.cos(attitude["pitch"]) * np.cos(attitude["roll"]) * g0
+
+
+
+    # acc_z = data["acc.z"] # - (data["acc.z"] - np.cos(attitude["roll"]) * np.cos(attitude["pitch"])) * g0
 
     # translational velocity
     vel_x = cumulative_trapezoid(acc_x, dx=1 / sampling_freq, initial=0)
@@ -443,7 +454,7 @@ def process_onboard(data, sampling_freq):
         })
     
     # Drop useless columns
-    data = data.drop(["timestamp", "gyro.x", "gyro.y", "gyro.z", "acc.x", "acc.y", "acc.z"], axis=1)
+    data = data.drop(["gyro.x", "gyro.y", "gyro.z", "acc.x", "acc.y", "acc.z"], axis=1)
 
     # Concatenate the processed data
     output = pd.concat([data, processed_data], axis=1)
@@ -451,7 +462,8 @@ def process_onboard(data, sampling_freq):
     return output
 
 
-def sync_timestamps(onboard, optitrack, columns_sync):
+def find_lag(onboard, optitrack, columns_sync):
+
     # Extract single column as 1D array
     x = onboard[columns_sync[0]].values
     y = optitrack[columns_sync[0]].values
@@ -474,11 +486,7 @@ def sync_timestamps(onboard, optitrack, columns_sync):
 def shift_data(data, lag, sampling_freq):
     time_shift = lag / sampling_freq
 
-    data["time"] = np.round(
-        np.linspace(time_shift, data["time"].iloc[-1] + time_shift, len(data["time"])),
-        2,
-    )
-
+    data["time"] = np.linspace(time_shift, data["time"].iloc[-1] + time_shift, len(data["time"]))
     return data, time_shift
 
 
@@ -505,10 +513,7 @@ def merge_dfs(onboard, optitrack, sampling_freq):
     
     # Recreate uniform time array
     num_samples = len(merged)
-    merged["time"] = np.round(
-        np.linspace(0, (num_samples - 1) / sampling_freq, num_samples),
-        6,
-    )
+    merged["time"] = np.linspace(0, (num_samples - 1) / sampling_freq, num_samples)
 
     return merged
 
@@ -538,7 +543,7 @@ def orient_onboard(data, sampling_freq, time_shift):
             "p": data["p"],
             "q": -data["q"],
             "r": -data["r"],
-            "acc.x": data["acc.x"],
+            "acc.x": -data["acc.x"],
             "acc.y": data["acc.y"],
             "acc.z": data["acc.z"],
         }
@@ -558,28 +563,74 @@ def orient_onboard(data, sampling_freq, time_shift):
     return oriented_data
 
 
-def optitrack_pipeline():
+def optitrack_pipeline(data, filter_freq, CoM_vector):
 
+    print("Processing the Optitrack data ...")
+
+    # Get Optitrack meta data
     optitrack_meta = get_optitrack_meta(config.optitrack_path)
     optitrack_fps = int(float(optitrack_meta["Capture Frame Rate"]))
 
-    optitrack_data_nonan = handle_nan(optitrack_data, optitrack_fps, 2)
+    # Handle NaNs in both dataframes
+    optitrack_data_nonan = handle_nan(data, optitrack_fps, 2)
 
-    optitrack_processed = process_optitrack(optitrack_data_nonan, body_to_CoM)
-    
+
+    # Filtering
     optitrack_filtered = filter_data(
-        optitrack_processed, filter_cutoff_freq, optitrack_fps
+        optitrack_data_nonan, filter_freq, optitrack_fps
     )
 
+    print("Computing states in body coordinates ...")
+    # Process the optitrack data
+    optitrack_processed = process_optitrack(optitrack_filtered, CoM_vector, optitrack_fps)
 
-    return 0
+    print("Processing of the Optitrack data completed.")
 
+    return optitrack_fps, optitrack_processed
+
+def onboard_pipeline(data, freq, filter_freq, optitrack_freq):
+
+    print("Processing the Optitrack data ...")
+    # Handle NaNs in both dataframes
+    onboard_data_nonan = handle_nan(data, onboard_freq, 2)
+
+    # Filtering
+    onboard_filtered = filter_data(onboard_data_nonan, filter_freq, freq)
+
+    print("Orienting the IMU data")
+    # Process the filtered onboard data
+    onboard_processed = process_onboard(onboard_filtered, freq)
+
+    print(f"Resampling down the IMU data from {freq} Hz to the Optitrack frame rate of {optitrack_freq} Hz")
+    # Resample the onboard data down to optitrack_fps
+    onboard_sampled = resample_data(onboard_processed, optitrack_freq, freq, freq)
+
+    print("Processing of the Onboard data completed.")
+    return onboard_sampled
+
+def sync_dataframes(onboard, optitrack, optitrack_fps, cols_sync):
+    print("Combine the data")
+
+    # Match the data
+    lag = find_lag(onboard, optitrack, cols_sync)
+
+    # Shift the optitrack data
+    optitrack_processed_shifted, time_shift = shift_data(
+        optitrack_processed, lag, optitrack_fps
+    )
+
+    # Merge synced DataFrames
+    processed_merged = merge_dfs(
+        onboard_processed, optitrack_processed_shifted, optitrack_fps
+    )
+
+    # After calculating lag
+    print(f"Lag: {lag} samples = {lag/optitrack_fps:.3f} seconds")
+
+    return processed_merged
 
 
 if __name__ == "__main__":
-    # data_dir = f"data/raw/{flight_exp}/{flight_exp}"
-    # processed_dir = f"data/processed/{flight_exp}/"
-
     # Read the .csv file into a pandas df
     optitrack_data = pd.read_csv(
         config.optitrack_path,
@@ -589,84 +640,18 @@ if __name__ == "__main__":
         header=None,
     )
 
-    # print(config.onboard_path, config.onboard_cols)
     onboard_data = pd.read_csv(config.onboard_path, header=0, names=config.onboard_cols)
 
+    optitrack_fps, optitrack_processed = optitrack_pipeline(optitrack_data, filter_cutoff_freq, body_to_CoM)
 
-    # print(onboard_data.head())
-    # Get Optitrack meta data
-    optitrack_meta = get_optitrack_meta(config.optitrack_path)
-    optitrack_fps = int(float(optitrack_meta["Capture Frame Rate"]))
+    onboard_processed = onboard_pipeline(onboard_data, onboard_freq, filter_cutoff_freq, optitrack_fps)
 
-    # Handle NaNs in both dataframes
-    onboard_data_nonan = handle_nan(onboard_data, onboard_freq, 2)
-    optitrack_data_nonan = handle_nan(optitrack_data, optitrack_fps, 2)
-
-    # Process the filtered onboard data
-    onboard_processed = process_onboard(onboard_data_nonan, onboard_freq)
-    # Process the optitrack data
-    optitrack_processed = process_optitrack(optitrack_data_nonan, body_to_CoM)
-    
-    
-    
-
-    # Filtering
-    # Filter the onboard data
-    onboard_filtered = filter_data(onboard_processed, filter_cutoff_freq, onboard_freq)
-    
-    # Filter the optitrack data
-    optitrack_filtered = filter_data(
-        optitrack_processed, filter_cutoff_freq, optitrack_fps
-    )
-
-    # Resample the onboard data down to optitrack_fps
-    onboard_sampled = resample_data(onboard_filtered, optitrack_fps, onboard_freq, onboard_freq)
- 
-    # Match the data
-    lag = sync_timestamps(onboard_sampled, optitrack_filtered, columns_sync)
-
-    
-    # Shift the optitrack data
-    optitrack_processed_shifted, time_shift = shift_data(
-        optitrack_filtered, lag, optitrack_fps
-    )
-
-    # print(time_shift)
-    
-
-    # # Merge synced DataFrames
-    processed_merged = merge_dfs(
-        onboard_sampled, optitrack_processed_shifted, optitrack_fps
-    )
+    processed_merged = sync_dataframes(onboard_processed, optitrack_processed, optitrack_fps, columns_sync)
 
 
-    
-    # After calculating lag
-    print(f"Lag: {lag} samples = {lag/optitrack_fps:.3f} seconds")
-
-    # Plot to verify
-    fig, axes = plt.subplots(2, 1, figsize=(12, 6))
-    axes[0].plot(onboard_sampled["time"], onboard_sampled[columns_sync[0]], label="Onboard")
-    axes[0].plot(optitrack_filtered["time"], optitrack_filtered[columns_sync[0]], label="OptiTrack")
-    axes[0].legend()
-    axes[0].set_title("Before Sync")
-
-    # After shifting
-    axes[1].plot(processed_merged["time"], processed_merged[f"onboard.{columns_sync[0]}"], label="Onboard")
-    axes[1].plot(processed_merged["time"], processed_merged[f"optitrack.{columns_sync[0]}"], label="OptiTrack (shifted)")
-    axes[1].legend()
-    axes[1].set_title("After Sync")
-    plt.tight_layout()
-    plt.show()
-
-
-
-
-
-
-    # # Save merged DataFrame
-    # os.makedirs(os.path.dirname(config.processed_path), exist_ok=True)
-    # processed_merged.to_csv(f"{config.processed_path}/{config.flight_exp}-processed.csv", index=False)
+    # Save merged DataFrame
+    os.makedirs(os.path.dirname(config.processed_path), exist_ok=True)
+    processed_merged.to_csv(f"{config.processed_path}/{config.flight_exp}-processed.csv", index=False)
 
     # # Process the onboard data at 500 Hz
     # onboard_data = pd.read_csv(onboard_csv, header=0, names=names_onboard)
@@ -674,3 +659,31 @@ if __name__ == "__main__":
     # oriented_data.to_csv(
     #     f"{processed_dir}/{flight_exp}_oriented_onboard.csv", index=False
     # )
+
+    # Plot to verify
+    if show:
+        fig, axes = plt.subplots(3, 1, figsize=(18, 6))
+
+        # After shifting
+        axes[0].plot(processed_merged["time"], processed_merged["onboard.acc.x"], label="Onboard")
+        axes[0].plot(processed_merged["time"], processed_merged["optitrack.acc.x"], label="OptiTrack (shifted)")
+        axes[0].legend()
+        axes[0].set_title("acc x")
+
+        axes[1].plot(processed_merged["time"], processed_merged["onboard.acc.y"], label="Onboard")
+        axes[1].plot(processed_merged["time"], processed_merged["optitrack.acc.y"], label="OptiTrack (shifted)")
+        axes[1].legend()
+        axes[1].set_title("acc y")
+
+        axes[2].plot(processed_merged["time"], processed_merged["onboard.acc.z"], label="Onboard")
+        axes[2].plot(processed_merged["time"], processed_merged["optitrack.acc.z"], label="OptiTrack (shifted)")
+        axes[2].legend()
+        axes[2].set_title("acc z")
+        plt.tight_layout()
+        plt.show()
+
+
+
+
+
+

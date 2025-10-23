@@ -1,7 +1,11 @@
+import os
+
+# use os.getenv and optionally cast types
+flight_exp = os.getenv("FLIGHT", "longitudinal1")
+
 GUIDED_FLIGHT = True # uses columns names for the guided flights
 RUN_PROCESSED = False
 
-flight_exp = "climb1"
 
 processed_path = f"data/processed/{flight_exp}/"
 

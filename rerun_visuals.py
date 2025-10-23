@@ -3,18 +3,12 @@ import rerun as rr
 import rerun.blueprint as rrb
 import numpy as np
 from scipy.spatial.transform import Rotation as R
-
-# Local imports
-from process_data import process_optitrack, handle_nan, filter_data
-
+import config
 
 wing_body_distance = 0.073
 axes_radius = 0.002
 marker_radius = 0.02
 line_radius = 0.007
-
-flight_exp = "longitudinal1"
-
 
 # Frame definition: x forward, y left, z up
 # OptiTrack z,x,y --> x,y,z, switch also for quaternions
@@ -28,15 +22,15 @@ TARGET_FFT_SIZE = 256
 SAMPLE_RATE = 100
 FREQ_RANGE = (5, 25)
 
-RUN_PROCESSED = False
+RUN_PROCESSED = True
 
 if RUN_PROCESSED:
     prepend = "optitrack."
-    data_path = f"data/processed/{flight_exp}/{flight_exp}_processed.csv"
+    data_path = f"data/processed/{config.flight_exp}/{config.flight_exp}-processed.csv"
 
 else:
     prepend = ""
-    data_path = f"data/raw/{flight_exp}/optitrack-{flight_exp}.csv"
+    data_path = f"data/raw/{config.flight_exp}/optitrack-{config.flight_exp}.csv"
 
 
 def mirror_point_through_plane(P, A, B, C):
@@ -64,11 +58,11 @@ blueprint = rrb.Blueprint(
         ),
         rrb.TimeSeriesView(origin="/dihedral/", name="dihedral", visible=False),
         rrb.TimeSeriesView(origin="/rotations/", name="rotations", visible=False),
-        rrb.TimeSeriesView(origin="/frequency/", name="frequency", visible=True),
+        rrb.TimeSeriesView(origin="/frequency/", name="frequency", visible=False),
         rrb.TimeSeriesView(
             origin="/position/", name="optitrack position", visible=False
         ),
-        rrb.TimeSeriesView(origin="/pwm_inputs/", name="pwm values", visible=True),
+        rrb.TimeSeriesView(origin="/accelerations/", name="accelerations", visible=True),
     ),
     collapse_panels=False,
 )
@@ -498,12 +492,8 @@ if __name__ == "__main__":
             header=None,
         )
 
-    # df = df.iloc[800:-1000, :]
-
     rr.init("rerun_flapper", spawn=True)
     rr.send_blueprint(blueprint)
-
-    df = handle_nan(df, 180, 2)
 
     for i in range(len(df)):
         rr.set_time("time", timestamp=df["time"].iloc[i])
@@ -516,5 +506,12 @@ if __name__ == "__main__":
         log_body_axes(df, i, axes_radius)
         # log_dihedral_frequency(df, i)
 
-        # rr.log("/pwm_inputs/left_pwm", rr.Scalars(df["onboard.motor.m2"].iloc[i]))
+        rr.log("/accelerations/acc.y-opti", rr.Scalars(df["optitrack.acc.y"].iloc[i]))
+        rr.log("/accelerations/acc.y-onboard", rr.Scalars(df["onboard.acc.y"].iloc[i]))
+
+        rr.log("/accelerations/acc.x-opti", rr.Scalars(df["optitrack.acc.x"].iloc[i]))
+        rr.log("/accelerations/acc.x-onboard", rr.Scalars(df["onboard.acc.x"].iloc[i]))
+
+        rr.log("/accelerations/acc.z-opti", rr.Scalars(df["optitrack.acc.z"].iloc[i]))
+        rr.log("/accelerations/acc.z-onboard", rr.Scalars(df["onboard.acc.z"].iloc[i]))
         # rr.log("/frequency/frequency_left", rr.Scalars(df["optitrack.freq.left"].iloc[i]))
