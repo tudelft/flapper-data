@@ -32,11 +32,11 @@ g0 = 9.80665  # m/s
 
 # Columns to use to sync the optitrack and IMU data
 columns_sync = ["acc.z",]
-show = False
+show = True
 
 
 
-body_to_CoM = np.array([0, 0, 0.20])
+body_to_CoM = np.array([+0.001, 0.0, -0.13])
 
 def get_optitrack_meta(optitrack_csv):
     print("Obtaining the optitrack metadata ...")
@@ -268,7 +268,6 @@ def process_optitrack(data, com_body, optitrack_fps):
 
     acc_ref = np.gradient(vel_ref, data["time"], axis=1)  # (3, N)
 
-
     # Position of the CoM in body frame
     pos_com_ref = body_pos_ref + com_body[:, np.newaxis]  # reshape com_body to (3, N)
 
@@ -276,14 +275,14 @@ def process_optitrack(data, com_body, optitrack_fps):
 
     acc_com_ref = (
         acc_ref
-        + np.cross(alpha_body_wrt_ref.T, com_body.ravel()).T
+        + np.cross(alpha_body_wrt_ref, com_body, axis=0)
         + np.cross(
-            rates_body_wrt_ref.T, np.cross(rates_body_wrt_ref.T, com_body.ravel())
-        ).T
+            rates_body_wrt_ref, np.cross(rates_body_wrt_ref, com_body, axis=0), axis=0
+        )
     )
 
-    # Rotations matrix from body frame to global frame
-    rotations_BodyToRef = np.array(
+    # Rotations matrix from global frame to body
+    rotations_RefToBody = np.array(
         [
             [
                 np.cos(theta) * np.cos(psi),
@@ -313,7 +312,7 @@ def process_optitrack(data, com_body, optitrack_fps):
     vely_com_body = 0
     velz_com_body = 0
 
-    accx_com_body, accy_com_body, accz_com_body = np.einsum("ijk,jk->ik", rotations_BodyToRef.transpose(1, 0, 2), acc_com_ref)
+    accx_com_body, accy_com_body, accz_com_body = np.einsum("ijk,jk->ik", rotations_RefToBody, acc_com_ref)
 
     # Compute and process the flapping frequency
 
@@ -361,7 +360,7 @@ def process_optitrack(data, com_body, optitrack_fps):
             "p_dot": alpha_body_wrt_ref[0, :],
             "q_dot": alpha_body_wrt_ref[1, :],
             "r_dot": alpha_body_wrt_ref[2, :],
-            "acc.x": acc_ref[0],
+            "acc.x": accx_com_body,
             "acc.y": acc_ref[1],
             "acc.z": acc_ref[2],
             "freq.right": freq_right,
@@ -425,10 +424,6 @@ def process_onboard(data, sampling_freq):
     acc_x = acc_x * g0 - np.sin(attitude["pitch"]) * g0 
     acc_y = acc_y * g0 + np.sin(attitude["roll"]) * np.cos(attitude["pitch"]) * g0
     acc_z = acc_z * g0 + np.cos(attitude["pitch"]) * np.cos(attitude["roll"]) * g0
-
-
-
-    # acc_z = data["acc.z"] # - (data["acc.z"] - np.cos(attitude["roll"]) * np.cos(attitude["pitch"])) * g0
 
     # translational velocity
     vel_x = cumulative_trapezoid(acc_x, dx=1 / sampling_freq, initial=0)
@@ -668,6 +663,7 @@ if __name__ == "__main__":
         axes[0].plot(processed_merged["time"], processed_merged["onboard.acc.x"], label="Onboard")
         axes[0].plot(processed_merged["time"], processed_merged["optitrack.acc.x"], label="OptiTrack (shifted)")
         axes[0].legend()
+        axes[0].set_ylim([-2, 2])
         axes[0].set_title("acc x")
 
         axes[1].plot(processed_merged["time"], processed_merged["onboard.acc.y"], label="Onboard")
