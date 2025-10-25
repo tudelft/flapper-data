@@ -187,4 +187,4 @@ else:
     ]
 
 
-print(optitrack_path)
+print(optitrack_path, onboard_path)

@@ -1,4 +1,4 @@
-PYTHON := .venv/bin/python
+PYTHON := .venv/bin/python3.11
 
 process-%:
 	FLIGHT=$* $(PYTHON) process_data.py

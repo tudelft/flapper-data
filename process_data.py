@@ -271,7 +271,7 @@ def process_optitrack(data, com_body, optitrack_fps):
     # Position of the CoM in body frame
     pos_com_ref = body_pos_ref + com_body[:, np.newaxis]  # reshape com_body to (3, N)
 
-    vel_com_ref = vel_ref + np.cross(rates_body_wrt_ref.T, com_body.ravel()).T
+    vel_com_ref = vel_ref + np.cross(rates_body_wrt_ref, com_body, axis=0)
 
     acc_com_ref = (
         acc_ref
@@ -308,9 +308,7 @@ def process_optitrack(data, com_body, optitrack_fps):
         ]
     )
 
-    velx_com_body = 0
-    vely_com_body = 0
-    velz_com_body = 0
+    velx_com_body, vely_com_body, velz_com_body = np.einsum("ijk,jk->ik", rotations_RefToBody, vel_com_ref)
 
     accx_com_body, accy_com_body, accz_com_body = np.einsum("ijk,jk->ik", rotations_RefToBody, acc_com_ref)
 
@@ -360,9 +358,12 @@ def process_optitrack(data, com_body, optitrack_fps):
             "p_dot": alpha_body_wrt_ref[0, :],
             "q_dot": alpha_body_wrt_ref[1, :],
             "r_dot": alpha_body_wrt_ref[2, :],
+            "vel.x": velx_com_body,
+            "vel.y": vely_com_body,
+            "vel.z": velz_com_body,
             "acc.x": accx_com_body,
-            "acc.y": acc_ref[1],
-            "acc.z": acc_ref[2],
+            "acc.y": accy_com_body,
+            "acc.z": accz_com_body,
             "freq.right": freq_right,
             "freq.left": freq_left,
             "dihedral.right": dihedral_right,
