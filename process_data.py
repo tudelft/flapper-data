@@ -32,7 +32,7 @@ g0 = 9.80665  # m/s
 
 # Columns to use to sync the optitrack and IMU data
 columns_sync = ["acc.z",]
-show = True
+show = False
 
 
 
@@ -213,14 +213,6 @@ def process_optitrack(data, com_body, optitrack_fps):
         oriented_data: pandas.DataFrame
     """
 
-    
-    wing_rootR_ref = np.array([data["fbrwz"], data["fbrwx"], data["fbrwy"]])
-    wing_lastR_ref = np.array([data["fbrw3z"], data["fbrw3x"], data["fbrw3y"]])
-    wing_rootL_ref = np.array([data["fblwz"], data["fblwx"], data["fblwy"]])
-    wing_lastL_ref = np.array([data["fblw3z"], data["fblw3x"], data["fblw3y"]])
-
-    top_body_marker_ref = np.array([data["fb1z"], data["fb1x"], data["fb1y"]])
-
     # Rotational kinematics
     quats = np.vstack((data["fbqx"], data["fbqy"], data["fbqz"], data["fbqw"])).T
 
@@ -312,6 +304,55 @@ def process_optitrack(data, com_body, optitrack_fps):
 
     accx_com_body, accy_com_body, accz_com_body = np.einsum("ijk,jk->ik", rotations_RefToBody, acc_com_ref)
 
+    
+    processed_data = pd.DataFrame(
+        {
+            "time": data["time"],
+            "roll": phi,
+            "pitch": theta,
+            "yaw": psi,
+            "p": roll_rate,
+            "q": pitch_rate,
+            "r": yaw_rate,
+            "p_dot": alpha_body_wrt_ref[0, :],
+            "q_dot": alpha_body_wrt_ref[1, :],
+            "r_dot": alpha_body_wrt_ref[2, :],
+            "vel.x": velx_com_body,
+            "vel.y": vely_com_body,
+            "vel.z": velz_com_body,
+            "acc.x": accx_com_body,
+            "acc.y": accy_com_body,
+            "acc.z": accz_com_body,
+
+        }
+    )
+
+    # Include all the markers position in the processed dataframe
+    processed_data = pd.concat([processed_data, data.iloc[:, 1:]], axis=1)
+
+    return processed_data   
+
+def process_frequency_dihedral(data, optitrack_fps):
+    body_pos_ref = np.asarray([data["fbz"], -data["fbx"], -data["fby"]])  # (3, N)
+        
+    wing_rootR_ref = np.array([data["fbrwz"], data["fbrwx"], data["fbrwy"]])
+    wing_lastR_ref = np.array([data["fbrw3z"], data["fbrw3x"], data["fbrw3y"]])
+    wing_rootL_ref = np.array([data["fblwz"], data["fblwx"], data["fblwy"]])
+    wing_lastL_ref = np.array([data["fblw3z"], data["fblw3x"], data["fblw3y"]])
+
+    top_body_marker_ref = np.array([data["fb1z"], data["fb1x"], data["fb1y"]])
+
+    # Rotational kinematics
+    quats = np.vstack((data["fbqx"], data["fbqy"], data["fbqz"], data["fbqw"])).T
+
+    # Compute the norm (length) of each quaternion (row-wise)
+    norms = np.linalg.norm(quats, axis=1, keepdims=True)
+
+    # Normalize each quaternion
+    quats = quats / norms
+
+    r = R.from_quat(quats, scalar_first=False)
+
     # Compute and process the flapping frequency
 
     forward_body = r.apply([0, 1, 0])
@@ -346,35 +387,13 @@ def process_optitrack(data, com_body, optitrack_fps):
     )
     dihedral_left = calculate_dihedral_angle(forward_body, norm_dihedral_left)
 
-    processed_data = pd.DataFrame(
-        {
-            "time": data["time"],
-            "roll": phi,
-            "pitch": theta,
-            "yaw": psi,
-            "p": roll_rate,
-            "q": pitch_rate,
-            "r": yaw_rate,
-            "p_dot": alpha_body_wrt_ref[0, :],
-            "q_dot": alpha_body_wrt_ref[1, :],
-            "r_dot": alpha_body_wrt_ref[2, :],
-            "vel.x": velx_com_body,
-            "vel.y": vely_com_body,
-            "vel.z": velz_com_body,
-            "acc.x": accx_com_body,
-            "acc.y": accy_com_body,
-            "acc.z": accz_com_body,
-            "freq.right": freq_right,
-            "freq.left": freq_left,
-            "dihedral.right": dihedral_right,
-            "dihedral.left": dihedral_left,
-        }
-    )
-
-    # Include all the markers position in the processed dataframe
-    processed_data = pd.concat([processed_data, data.iloc[:, 1:]], axis=1)
-
-    return processed_data   
+    output = pd.DataFrame({"time":data["time"],
+                            "freq.right": freq_right,
+                            "freq.left": freq_left,
+                            "dihedral.right": dihedral_right,
+                            "dihedral.left": dihedral_left,})
+    
+    return output
 
 
 def process_onboard(data, sampling_freq):
@@ -570,7 +589,13 @@ def optitrack_pipeline(data, filter_freq, CoM_vector):
     # Handle NaNs in both dataframes
     optitrack_data_nonan = handle_nan(data, optitrack_fps, 2)
 
+    optitrack_freq_dihedral = process_frequency_dihedral(optitrack_data_nonan, optitrack_fps)
 
+    optitrack_freq_dihedral = filter_data(
+        optitrack_freq_dihedral, filter_freq, optitrack_fps
+    ).iloc[:, 1:]
+
+    print(optitrack_freq_dihedral.columns)
     # Filtering
     optitrack_filtered = filter_data(
         optitrack_data_nonan, filter_freq, optitrack_fps
@@ -580,9 +605,11 @@ def optitrack_pipeline(data, filter_freq, CoM_vector):
     # Process the optitrack data
     optitrack_processed = process_optitrack(optitrack_filtered, CoM_vector, optitrack_fps)
 
+    output = pd.concat([optitrack_processed, optitrack_freq_dihedral], axis=1)
+
     print("Processing of the Optitrack data completed.")
 
-    return optitrack_fps, optitrack_processed
+    return optitrack_fps, output
 
 def onboard_pipeline(data, freq, filter_freq, optitrack_freq):
 
@@ -649,6 +676,7 @@ if __name__ == "__main__":
     os.makedirs(os.path.dirname(config.processed_path), exist_ok=True)
     processed_merged.to_csv(f"{config.processed_path}/{config.flight_exp}-processed.csv", index=False)
 
+    print("Processed data saved at", f"{config.processed_path}/{config.flight_exp}-processed.csv")
     # # Process the onboard data at 500 Hz
     # onboard_data = pd.read_csv(onboard_csv, header=0, names=names_onboard)
     # oriented_data = orient_onboard(onboard_data, onboard_freq, time_shift)

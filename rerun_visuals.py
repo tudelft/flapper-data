@@ -106,7 +106,7 @@ def calculate_dihedral_angle(forward_body, norm_dihedral):
 
 
 def log_body_markers(df, i, marker_radius):
-    for idx in range(1, 6):
+    for idx in range(1, 7):
         rr.log(
             f"/flapper/fb_body_{idx}",
             rr.Points3D(
@@ -514,4 +514,5 @@ if __name__ == "__main__":
 
         rr.log("/accelerations/acc.z-opti", rr.Scalars(df["optitrack.acc.z"].iloc[i]))
         rr.log("/accelerations/acc.z-onboard", rr.Scalars(df["onboard.acc.z"].iloc[i]))
-        # rr.log("/frequency/frequency_left", rr.Scalars(df["optitrack.freq.left"].iloc[i]))
+        rr.log("/frequency/frequency_left", rr.Scalars(df["optitrack.freq.left"].iloc[i]))
+        rr.log("/frequency/frequency_right", rr.Scalars(df["optitrack.freq.right"].iloc[i]))
