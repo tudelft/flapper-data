@@ -507,12 +507,12 @@ if __name__ == "__main__":
         # log_dihedral_frequency(df, i)
 
         rr.log("/accelerations/acc.y-opti", rr.Scalars(df["optitrack.acc.y"].iloc[i]))
-        rr.log("/accelerations/acc.y-onboard", rr.Scalars(df["onboard.acc.y"].iloc[i]))
+        rr.log("/accelerations/vel.z-opti", rr.Scalars(df["optitrack.vel.z"].iloc[i]))
 
         rr.log("/accelerations/acc.x-opti", rr.Scalars(df["optitrack.acc.x"].iloc[i]))
-        rr.log("/accelerations/acc.x-onboard", rr.Scalars(df["onboard.acc.x"].iloc[i]))
+        # rr.log("/accelerations/acc.x-onboard", rr.Scalars(df["onboard.acc.x"].iloc[i]))
 
         rr.log("/accelerations/acc.z-opti", rr.Scalars(df["optitrack.acc.z"].iloc[i]))
-        rr.log("/accelerations/acc.z-onboard", rr.Scalars(df["onboard.acc.z"].iloc[i]))
+        # rr.log("/accelerations/acc.z-onboard", rr.Scalars(df["onboard.acc.z"].iloc[i]))
         rr.log("/frequency/frequency_left", rr.Scalars(df["optitrack.freq.left"].iloc[i]))
         rr.log("/frequency/frequency_right", rr.Scalars(df["optitrack.freq.right"].iloc[i]))

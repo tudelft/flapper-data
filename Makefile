@@ -1,4 +1,7 @@
-PYTHON := .venv/bin/python3.11
+VENV := .venv
+export PATH := $(VENV)/bin:$(PATH)
+PYTHON := python
+
 
 # Define your list of flights
 FLIGHTS := hover1 hover2 climb1 climb2 lateral1 lateral2 longitudinal1 longitudinal2 yaw1 yaw2
