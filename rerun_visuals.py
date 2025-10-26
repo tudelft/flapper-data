@@ -57,6 +57,7 @@ blueprint = rrb.Blueprint(
             name="flapper",
         ),
         rrb.TimeSeriesView(origin="/dihedral/", name="dihedral", visible=False),
+        rrb.TimeSeriesView(origin="/cmd/", name="cmd", visible=False),
         rrb.TimeSeriesView(origin="/rotations/", name="rotations", visible=False),
         rrb.TimeSeriesView(origin="/frequency/", name="frequency", visible=False),
         rrb.TimeSeriesView(
@@ -516,3 +517,5 @@ if __name__ == "__main__":
         # rr.log("/accelerations/acc.z-onboard", rr.Scalars(df["onboard.acc.z"].iloc[i]))
         rr.log("/frequency/frequency_left", rr.Scalars(df["optitrack.freq.left"].iloc[i]))
         rr.log("/frequency/frequency_right", rr.Scalars(df["optitrack.freq.right"].iloc[i]))
+
+        rr.log("/cmd/cmd_pitch", rr.Scalars(df["onboard.controller.cmd_pitch"].iloc[i]))
