@@ -69,7 +69,7 @@ def calculate_dihedral_angle(forward_body, norm_dihedral):
     angles = np.arcsin(norms_cross / (norms_forward * norms_dihedral))
 
     # Assign sign based on z-component of cross product
-    signs = np.where(cross_products[:, 2] >= 0, 1, -1)
+    signs = np.where(cross_products[:, 2] >= 0, 1, -1) * 0
     return angles * signs
 
 
@@ -335,12 +335,12 @@ def process_optitrack(data, com_body, optitrack_fps):
 def process_frequency_dihedral(data, optitrack_fps):
     body_pos_ref = np.asarray([data["fbz"], -data["fbx"], -data["fby"]])  # (3, N)
         
-    wing_rootR_ref = np.array([data["fbrwz"], data["fbrwx"], data["fbrwy"]])
-    wing_lastR_ref = np.array([data["fbrw3z"], data["fbrw3x"], data["fbrw3y"]])
-    wing_rootL_ref = np.array([data["fblwz"], data["fblwx"], data["fblwy"]])
-    wing_lastL_ref = np.array([data["fblw3z"], data["fblw3x"], data["fblw3y"]])
+    wing_rootR_ref = np.array([data["fbrw2z"], -data["fbrw2x"], -data["fbrw2y"]])
+    wing_lastR_ref = np.array([data["fbrw3z"], -data["fbrw3x"], -data["fbrw3y"]])
+    wing_rootL_ref = np.array([data["fblw3z"], -data["fblw3x"], -data["fblw3y"]])
+    wing_lastL_ref = np.array([data["fblw1z"], -data["fblw1x"], -data["fblw1y"]])
 
-    top_body_marker_ref = np.array([data["fb1z"], data["fb1x"], data["fb1y"]])
+    top_body_marker_ref = np.array([data["fb1z"], -data["fb1x"], -data["fb1y"]])
 
     # Rotational kinematics
     quats = np.vstack((data["fbqx"], data["fbqy"], data["fbqz"], data["fbqw"])).T
@@ -353,7 +353,6 @@ def process_frequency_dihedral(data, optitrack_fps):
 
     r = R.from_quat(quats, scalar_first=False)
 
-    # Compute and process the flapping frequency
 
     forward_body = r.apply([0, 1, 0])
 
@@ -390,7 +389,7 @@ def process_frequency_dihedral(data, optitrack_fps):
     output = pd.DataFrame({"time":data["time"],
                             "freq.right": freq_right,
                             "freq.left": freq_left,
-                            "dihedral.right": dihedral_right,
+                            "dihedral.right": -dihedral_right,
                             "dihedral.left": dihedral_left,})
     
     return output

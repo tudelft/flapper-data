@@ -218,18 +218,18 @@ def log_body_strips(df, i, line_radius):
 
 def log_wing_markers(df, i, wing, marker_radius):
     color = [255, 0, 0] if wing == "right" else [0, 0, 255]
-    rr.log(
-        f"/flapper/fb_{wing}_wing",
-        rr.Points3D(
-            [
-                df[f"{prepend}fb{wing[0]}wz"].iloc[i],
-                df[f"{prepend}fb{wing[0]}wx"].iloc[i],
-                df[f"{prepend}fb{wing[0]}wy"].iloc[i],
-            ],
-            colors=color,
-            radii=[marker_radius],
-        ),
-    )
+    # rr.log(
+    #     f"/flapper/fb_{wing}_wing",
+    #     rr.Points3D(
+    #         [
+    #             df[f"{prepend}fb{wing[0]}wz"].iloc[i],
+    #             df[f"{prepend}fb{wing[0]}wx"].iloc[i],
+    #             df[f"{prepend}fb{wing[0]}wy"].iloc[i],
+    #         ],
+    #         colors=color,
+    #         radii=[marker_radius],
+    #     ),
+    # )
     for idx in [1, 2, 3]:
         rr.log(
             f"/flapper/fb_{wing}_wing_{idx}",
@@ -519,3 +519,5 @@ if __name__ == "__main__":
         rr.log("/frequency/frequency_right", rr.Scalars(df["optitrack.freq.right"].iloc[i]))
 
         rr.log("/cmd/cmd_pitch", rr.Scalars(df["onboard.controller.cmd_pitch"].iloc[i]))
+        rr.log("/dihedral/dihedral.left", rr.Scalars(df["optitrack.dihedral.left"].iloc[i]))
+        rr.log("/dihedral/dihedral.right", rr.Scalars(df["optitrack.dihedral.right"].iloc[i]))
