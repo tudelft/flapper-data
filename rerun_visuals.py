@@ -509,6 +509,7 @@ if __name__ == "__main__":
 
         rr.log("/accelerations/acc.y-opti", rr.Scalars(df["optitrack.acc.y"].iloc[i]))
         rr.log("/accelerations/vel.z-opti", rr.Scalars(df["optitrack.vel.z"].iloc[i]))
+        rr.log("/accelerations/vel.x-opti", rr.Scalars(df["optitrack.vel.x"].iloc[i]))
 
         rr.log("/accelerations/acc.x-opti", rr.Scalars(df["optitrack.acc.x"].iloc[i]))
         # rr.log("/accelerations/acc.x-onboard", rr.Scalars(df["onboard.acc.x"].iloc[i]))
@@ -517,6 +518,10 @@ if __name__ == "__main__":
         # rr.log("/accelerations/acc.z-onboard", rr.Scalars(df["onboard.acc.z"].iloc[i]))
         rr.log("/frequency/frequency_left", rr.Scalars(df["optitrack.freq.left"].iloc[i]))
         rr.log("/frequency/frequency_right", rr.Scalars(df["optitrack.freq.right"].iloc[i]))
+
+        rr.log("/rotations/pitch", rr.Scalars(df["onboard.controller.pitch"].iloc[i]))
+        rr.log("/rotations/roll", rr.Scalars(df["onboard.controller.roll"].iloc[i]))
+        rr.log("/rotations/yaw", rr.Scalars(df["onboard.controller.yaw"].iloc[i]))
 
         rr.log("/cmd/cmd_pitch", rr.Scalars(df["onboard.controller.cmd_pitch"].iloc[i]))
         rr.log("/dihedral/dihedral.left", rr.Scalars(df["optitrack.dihedral.left"].iloc[i]))
