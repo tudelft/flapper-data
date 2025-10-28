@@ -13,7 +13,7 @@ axes_radius = 0.002
 marker_radius = 0.02
 line_radius = 0.007
 
-flight_exp = "flight_001"
+flight_exp = "flight_002"
 
 
 
@@ -421,6 +421,8 @@ if __name__ == "__main__":
 
         rr.log("/pwm_inputs/left_pwm", rr.Scalars(df["onboard.motor.m2"].iloc[i]))
         rr.log("/frequency/frequency_left", rr.Scalars(df["optitrack.freq.left"].iloc[i]))
+        rr.log("/dihedral/dihedral_left", rr.Scalars(df["optitrack.dihedral.left"].iloc[i] + 0.247))
+        rr.log("/dihedral/dihedral_right", rr.Scalars(-(df["optitrack.dihedral.right"].iloc[i] + 0.247)))
 
 
 
