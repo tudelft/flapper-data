@@ -69,7 +69,7 @@ def calculate_dihedral_angle(forward_body, norm_dihedral):
     angles = np.arcsin(norms_cross / (norms_forward * norms_dihedral))
 
     # Assign sign based on z-component of cross product
-    signs = np.where(cross_products[:, 2] >= 0, 1, -1) * 0
+    signs = np.where(cross_products[:, 2] >= 0, 1, -1)
     return angles * signs
 
 
@@ -333,17 +333,16 @@ def process_optitrack(data, com_body, optitrack_fps):
     return processed_data   
 
 def process_frequency_dihedral(data, optitrack_fps):
-    body_pos_ref = np.asarray([data["fbz"], -data["fbx"], -data["fby"]])  # (3, N)
-        
+    body_pos_ref = np.asarray([data["fbz"], -data["fbx"], -data["fby"]])
     wing_rootR_ref = np.array([data["fbrw2z"], -data["fbrw2x"], -data["fbrw2y"]])
     wing_lastR_ref = np.array([data["fbrw3z"], -data["fbrw3x"], -data["fbrw3y"]])
+
     wing_rootL_ref = np.array([data["fblw3z"], -data["fblw3x"], -data["fblw3y"]])
     wing_lastL_ref = np.array([data["fblw1z"], -data["fblw1x"], -data["fblw1y"]])
-
     top_body_marker_ref = np.array([data["fb1z"], -data["fb1x"], -data["fb1y"]])
 
     # Rotational kinematics
-    quats = np.vstack((data["fbqx"], data["fbqy"], data["fbqz"], data["fbqw"])).T
+    quats = np.vstack((data["fbqz"], data["fbqx"], data["fbqy"], data["fbqw"])).T
 
     # Compute the norm (length) of each quaternion (row-wise)
     norms = np.linalg.norm(quats, axis=1, keepdims=True)
@@ -354,11 +353,21 @@ def process_frequency_dihedral(data, optitrack_fps):
     r = R.from_quat(quats, scalar_first=False)
 
 
-    forward_body = r.apply([0, 1, 0])
+    forward_body = r.apply([1, 0, 0])
 
-    BA_right = body_pos_ref - top_body_marker_ref
-    BC_right = wing_rootR_ref - body_pos_ref
-    norm_dihedral_right = np.cross(BA_right.T, BC_right.T)
+    # Define point B, center of body "fbx, fby, fbz" in optitrack
+    # Define point A, top of the drone, usually fb1x, ...
+    # Define point C, root of each wing
+    AB = np.array([0, 0, 1]).T #(3,)
+    AC_right = wing_rootR_ref - top_body_marker_ref
+    AC_left = wing_rootL_ref - top_body_marker_ref
+
+    norm_dihedral_right = np.cross(AB, AC_right, axis=0).T
+    norm_dihedral_left = np.cross(AB, AC_left, axis=0).T
+
+    dihedral_right = calculate_dihedral_angle(forward_body, norm_dihedral_right)
+    dihedral_left = calculate_dihedral_angle(forward_body, norm_dihedral_left)
+
     right_wing_vector = (wing_lastR_ref - wing_rootR_ref).T
 
     freq_right = calculate_frequency(
@@ -369,11 +378,7 @@ def process_frequency_dihedral(data, optitrack_fps):
         TARGET_FFT_SIZE,
         FREQ_RANGE,
     )
-    dihedral_right = calculate_dihedral_angle(forward_body, norm_dihedral_right)
 
-    BA_left = body_pos_ref - top_body_marker_ref
-    BC_left = wing_rootL_ref - body_pos_ref
-    norm_dihedral_left = np.cross(BA_left.T, BC_left.T)
     left_wing_vector = (wing_lastL_ref - wing_rootL_ref).T
 
     freq_left = calculate_frequency(
@@ -384,13 +389,12 @@ def process_frequency_dihedral(data, optitrack_fps):
         TARGET_FFT_SIZE,
         FREQ_RANGE,
     )
-    dihedral_left = calculate_dihedral_angle(forward_body, norm_dihedral_left)
 
     output = pd.DataFrame({"time":data["time"],
                             "freq.right": freq_right,
                             "freq.left": freq_left,
-                            "dihedral.right": -dihedral_right,
-                            "dihedral.left": dihedral_left,})
+                            "dihedral.right": dihedral_right - np.mean(dihedral_right[:360]),
+                            "dihedral.left": (dihedral_left - np.mean(dihedral_left[:360])),})
     
     return output
 

@@ -56,14 +56,14 @@ blueprint = rrb.Blueprint(
             origin="/flapper/",
             name="flapper",
         ),
-        rrb.TimeSeriesView(origin="/dihedral/", name="dihedral", visible=False),
+        rrb.TimeSeriesView(origin="/dihedral/", name="dihedral", visible=True),
         rrb.TimeSeriesView(origin="/cmd/", name="cmd", visible=False),
         rrb.TimeSeriesView(origin="/rotations/", name="rotations", visible=False),
         rrb.TimeSeriesView(origin="/frequency/", name="frequency", visible=False),
         rrb.TimeSeriesView(
             origin="/position/", name="optitrack position", visible=False
         ),
-        rrb.TimeSeriesView(origin="/accelerations/", name="accelerations", visible=True),
+        rrb.TimeSeriesView(origin="/accelerations/", name="accelerations", visible=False),
     ),
     collapse_panels=False,
 )
