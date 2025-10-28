@@ -57,7 +57,7 @@ blueprint = rrb.Blueprint(
             name="flapper",
         ),
         rrb.TimeSeriesView(origin="/dihedral/", name="dihedral", visible=True),
-        rrb.TimeSeriesView(origin="/cmd/", name="cmd", visible=False),
+        rrb.TimeSeriesView(origin="/cmd/", name="cmd", visible=True),
         rrb.TimeSeriesView(origin="/rotations/", name="rotations", visible=False),
         rrb.TimeSeriesView(origin="/frequency/", name="frequency", visible=False),
         rrb.TimeSeriesView(

@@ -31,7 +31,7 @@ filter_cutoff_freq = 2  # Hz
 g0 = 9.80665  # m/s
 
 # Columns to use to sync the optitrack and IMU data
-columns_sync = ["acc.z",]
+columns_sync = ["acc.z", "pitch", "roll", "yaw"]
 show = False
 
 
@@ -57,19 +57,18 @@ def get_optitrack_meta(optitrack_csv):
 
 
 def calculate_dihedral_angle(forward_body, norm_dihedral):
-    """Calculate dihedral angle with proper sign"""
+    """Calculate dihedral angle with proper sign based on wing side"""
     cross_products = np.cross(forward_body, norm_dihedral)
-
+    
     # Norms
     norms_cross = np.linalg.norm(cross_products, axis=1)
     norms_forward = np.linalg.norm(forward_body, axis=1)
     norms_dihedral = np.linalg.norm(norm_dihedral, axis=1)
-
+    
     # Unsigned angles
     angles = np.arcsin(norms_cross / (norms_forward * norms_dihedral))
-
-    # Assign sign based on z-component of cross product
-    signs = np.where(cross_products[:, 2] >= 0, 1, -1)
+    
+    signs = np.where(cross_products[:, 0] >= 0, 1, -1)
     return angles * signs
 
 
@@ -358,17 +357,18 @@ def process_frequency_dihedral(data, optitrack_fps):
     # Define point B, center of body "fbx, fby, fbz" in optitrack
     # Define point A, top of the drone, usually fb1x, ...
     # Define point C, root of each wing
-    AB = np.array([0, 0, 1]).T #(3,)
+    AB = top_body_marker_ref - body_pos_ref
     AC_right = wing_rootR_ref - top_body_marker_ref
     AC_left = wing_rootL_ref - top_body_marker_ref
 
-    norm_dihedral_right = np.cross(AB, AC_right, axis=0).T
-    norm_dihedral_left = np.cross(AB, AC_left, axis=0).T
+    norm_dihedral_right = np.cross(AB.T, AC_right.T)
+    norm_dihedral_left = np.cross(AB.T, AC_left.T)
 
     dihedral_right = calculate_dihedral_angle(forward_body, norm_dihedral_right)
     dihedral_left = calculate_dihedral_angle(forward_body, norm_dihedral_left)
 
     right_wing_vector = (wing_lastR_ref - wing_rootR_ref).T
+
 
     freq_right = calculate_frequency(
         norm_dihedral_right,
@@ -393,8 +393,8 @@ def process_frequency_dihedral(data, optitrack_fps):
     output = pd.DataFrame({"time":data["time"],
                             "freq.right": freq_right,
                             "freq.left": freq_left,
-                            "dihedral.right": dihedral_right - np.mean(dihedral_right[:360]),
-                            "dihedral.left": (dihedral_left - np.mean(dihedral_left[:360])),})
+                            "dihedral.right": dihedral_right,
+                            "dihedral.left": dihedral_left})
     
     return output
 
