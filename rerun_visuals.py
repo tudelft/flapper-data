@@ -523,6 +523,11 @@ if __name__ == "__main__":
         rr.log("/rotations/roll", rr.Scalars(df["onboard.controller.roll"].iloc[i]))
         rr.log("/rotations/yaw", rr.Scalars(df["onboard.controller.yaw"].iloc[i]))
 
+        rr.log("/rotations/q_dot", rr.Scalars(df["optitrack.q_dot"].iloc[i]))
+        rr.log("/rotations/onboard_q_dot", rr.Scalars(df["onboard.q_dot"].iloc[i]))
+        rr.log("/rotations/1", rr.Scalars(df["optitrack.q"].iloc[i]))
+        # rr.log("/rotations/r", rr.Scalars(df["optitrack.r_dot"].iloc[i]))
+
         rr.log("/cmd/cmd_pitch", rr.Scalars(df["onboard.controller.cmd_pitch"].iloc[i]))
         rr.log("/dihedral/dihedral.left", rr.Scalars(df["optitrack.dihedral.left"].iloc[i]))
         rr.log("/dihedral/dihedral.right", rr.Scalars(df["optitrack.dihedral.right"].iloc[i]))

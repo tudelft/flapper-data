@@ -32,7 +32,7 @@ g0 = 9.80665  # m/s
 
 # Columns to use to sync the optitrack and IMU data
 columns_sync = ["acc.z", "pitch", "roll", "yaw"]
-show = False
+show = True
 
 
 
@@ -58,6 +58,8 @@ def get_optitrack_meta(optitrack_csv):
 
 def calculate_dihedral_angle(forward_body, norm_dihedral):
     """Calculate dihedral angle with proper sign based on wing side"""
+
+    print(forward_body.shape, norm_dihedral.shape)
     cross_products = np.cross(forward_body, norm_dihedral)
     
     # Norms
@@ -68,8 +70,8 @@ def calculate_dihedral_angle(forward_body, norm_dihedral):
     # Unsigned angles
     angles = np.arcsin(norms_cross / (norms_forward * norms_dihedral))
     
-    signs = np.where(cross_products[:, 0] >= 0, 1, -1)
-    return angles * signs
+    # signs = np.where(cross_products[:, 0] >= 0, 1, -1)
+    return angles # * signs
 
 
 def align_to_original_length(dominant_freqs, N, window_size):
@@ -177,7 +179,7 @@ def filter_data(data, cutoff_freq, sampling_freq):
 
     columns_name = data.columns
 
-    b, a = signal.butter(4, cutoff_freq, fs=sampling_freq)
+    b, a = signal.butter(5, cutoff_freq, fs=sampling_freq)
 
     filtered_data = signal.filtfilt(b, a, data.iloc[:, 1:], axis=0)
 
@@ -213,7 +215,7 @@ def process_optitrack(data, com_body, optitrack_fps):
     """
 
     # Rotational kinematics
-    quats = np.vstack((data["fbqx"], data["fbqy"], data["fbqz"], data["fbqw"])).T
+    quats = np.vstack((data["fbqz"], data["fbqx"], data["fbqy"], data["fbqw"])).T
 
     # Compute the norm (length) of each quaternion (row-wise)
     norms = np.linalg.norm(quats, axis=1, keepdims=True)
@@ -224,7 +226,7 @@ def process_optitrack(data, com_body, optitrack_fps):
     r = R.from_quat(quats, scalar_first=False)
 
     # Optitrack defines Z-up, Y-left, X-forward
-    euler_angles = r.as_euler("YXZ", degrees=False)
+    euler_angles = r.as_euler("ZYX", degrees=False)
 
     # First extract yaw, pitch and then roll
     psi, theta, phi = -euler_angles[:, 0], -euler_angles[:, 1], euler_angles[:, 2] # all checked correct orientation
@@ -332,27 +334,22 @@ def process_optitrack(data, com_body, optitrack_fps):
     return processed_data   
 
 def process_frequency_dihedral(data, optitrack_fps):
-    body_pos_ref = np.asarray([data["fbz"], -data["fbx"], -data["fby"]])
-    wing_rootR_ref = np.array([data["fbrw2z"], -data["fbrw2x"], -data["fbrw2y"]])
-    wing_lastR_ref = np.array([data["fbrw3z"], -data["fbrw3x"], -data["fbrw3y"]])
+    body_pos_ref = np.asarray([data["fbz"], data["fbx"], data["fby"]])
+    wing_rootR_ref = np.array([data["fbrw2z"], data["fbrw2x"], data["fbrw2y"]])
+    wing_lastR_ref = np.array([data["fbrw3z"], data["fbrw3x"], data["fbrw3y"]])
 
-    wing_rootL_ref = np.array([data["fblw3z"], -data["fblw3x"], -data["fblw3y"]])
-    wing_lastL_ref = np.array([data["fblw1z"], -data["fblw1x"], -data["fblw1y"]])
-    top_body_marker_ref = np.array([data["fb1z"], -data["fb1x"], -data["fb1y"]])
+    wing_rootL_ref = np.array([data["fblw3z"], data["fblw3x"], data["fblw3y"]])
+    wing_lastL_ref = np.array([data["fblw1z"], data["fblw1x"], data["fblw1y"]])
+    top_body_marker_ref = np.array([data["fb1z"], data["fb1x"], data["fb1y"]])
 
     # Rotational kinematics
     quats = np.vstack((data["fbqz"], data["fbqx"], data["fbqy"], data["fbqw"])).T
-
-    # Compute the norm (length) of each quaternion (row-wise)
-    norms = np.linalg.norm(quats, axis=1, keepdims=True)
-
-    # Normalize each quaternion
-    quats = quats / norms
 
     r = R.from_quat(quats, scalar_first=False)
 
 
     forward_body = r.apply([1, 0, 0])
+    backwards_body = r.apply([1, 0, 0])
 
     # Define point B, center of body "fbx, fby, fbz" in optitrack
     # Define point A, top of the drone, usually fb1x, ...
@@ -365,7 +362,7 @@ def process_frequency_dihedral(data, optitrack_fps):
     norm_dihedral_left = np.cross(AB.T, AC_left.T)
 
     dihedral_right = calculate_dihedral_angle(forward_body, norm_dihedral_right)
-    dihedral_left = calculate_dihedral_angle(forward_body, norm_dihedral_left)
+    dihedral_left = 0 #calculate_dihedral_angle(backwards_body, norm_dihedral_left)
 
     right_wing_vector = (wing_lastR_ref - wing_rootR_ref).T
 
@@ -598,10 +595,10 @@ def optitrack_pipeline(data, filter_freq, CoM_vector):
         optitrack_freq_dihedral, filter_freq, optitrack_fps
     ).iloc[:, 1:]
 
-    print(optitrack_freq_dihedral.columns)
+
     # Filtering
     optitrack_filtered = filter_data(
-        optitrack_data_nonan, filter_freq, optitrack_fps
+        optitrack_data_nonan, 1, optitrack_fps
     )
 
     print("Computing states in body coordinates ...")
@@ -698,8 +695,8 @@ if __name__ == "__main__":
         axes[0].set_ylim([-2, 2])
         axes[0].set_title("acc x")
 
-        axes[1].plot(processed_merged["time"], processed_merged["onboard.acc.y"], label="Onboard")
-        axes[1].plot(processed_merged["time"], processed_merged["optitrack.acc.y"], label="OptiTrack (shifted)")
+        axes[1].plot(processed_merged["time"], processed_merged["onboard.q"], label="Onboard")
+        axes[1].plot(processed_merged["time"], processed_merged["optitrack.q"], label="OptiTrack (shifted)")
         axes[1].legend()
         axes[1].set_title("acc y")
 
