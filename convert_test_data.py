@@ -65,6 +65,7 @@ with open(os.path.join(dest_folder, 'notes.txt'), 'w') as f:
 # Folder where the Crazyflie SD card is expected to be mounted.
 # Adjust this path if your system uses a different mount point.
 src_folder = "/media/sstroobants/FlapperSD"
+# src_folder = "data/2025_12_08/no_att/CoG/X-direction/01"
 
 # Copy every file from the SD card except ``*.txt`` helper files into
 # the destination folder, preserving the original filenames.

@@ -26,19 +26,20 @@ import numpy as np
 import pandas as pd
 from scipy.spatial.transform import Rotation as R
 from scipy.signal import medfilt
+import time
 
 # ==========================
 # CONFIGURATION
 # ==========================
 CONFIG = {
-    "test_name": "flowdeck_cyberzoo_032",
+    "test_name": "flowdeck_cyberzoo_049",
     "timestamp_scale": 990,
     "smooth_windows": {
         "x": 20,
         "y": 20,
         "position": 5
     },
-    "median_filter_kernel": 9,
+    "median_filter_kernel": 5,
     "velocity_smooth": {
         "vx": 10,
         "vy": 10,
@@ -82,12 +83,12 @@ def load_opti_data(test_name):
     """
     # Read the header row (row 4, which is at index 3) to find the columns for the "Flapper" rigid body
     header_df = pd.read_csv(f"data/{test_name}/opti.csv", skiprows=3, nrows=1, header=None)
-    
-    # Find columns that are "Flapper"
-    flapper_cols = [i for i, col_name in enumerate(header_df.iloc[0]) if isinstance(col_name, str) and col_name == "Flapper"]
-    # The columns to use are the first two (index, timestamp) and the flapper columns
-    cols_to_use = [0, 1] + flapper_cols
-    
+
+    # Find columns that are "Flapjack"
+    flapjack_cols = [i for i, col_name in enumerate(header_df.iloc[0]) if isinstance(col_name, str) and col_name == "Flapper"]
+    # The columns to use are the first two (index, timestamp) and the flapjack columns
+    cols_to_use = [0, 1] + flapjack_cols
+
     # Define the names for the columns we are loading
     col_names = ["index", "timestamp", "qx", "qy", "qz", "qw", "x", "y", "z"]
 
@@ -99,7 +100,7 @@ def load_opti_data(test_name):
         index_col=0,
         names=col_names
     )
-    df[["x", "y", "z"]] -= df[["x", "y", "z"]].iloc[0]
+    # df[["x", "y", "z"]] -= df[["x", "y", "z"]].iloc[0]
     df["timestamp"] = df["timestamp"] - df["timestamp"].iloc[0]  # normalize to start at 0
     return df
 
@@ -109,67 +110,99 @@ def load_opti_data(test_name):
 def synchronize_by_z(sd_data, opti_data):
     """Synchronise SD and OptiTrack data by matching height (z/y).
 
-    Both signals are interpolated on a common time grid.  A range of
-    time shifts is tested, and the shift with the lowest mean squared
-    error between SD ``stateEstimate.z`` and OptiTrack ``y`` is chosen.
-    The OptiTrack timestamps are shifted accordingly.
+    Uses (optionally downsampled) SD timestamps as reference; for each
+    time shift, OptiTrack z is interpolated to SD timestamps and MSE is
+    computed on the overlapping time window only.
     """
-    n_samples = 5000
     opti_data = opti_data.dropna(subset=['y'])  # ensure no NaN in z-axis
 
-    # Create a common regular time grid
-    start_time = max(sd_data['timestamp'].min(), opti_data['timestamp'].min())
-    end_time = min(sd_data['timestamp'].max(), opti_data['timestamp'].max())
-    common_time = np.linspace(start_time, end_time, num=n_samples)[:-500]
+    # --- full‑rate SD data (used for final plot only) ---
+    t_sd_full = sd_data['timestamp'].to_numpy()
+    z_sd_full = sd_data['stateEstimate.z'].to_numpy()
 
-    # Interpolate both signals to the common time grid
-    sd_z_interp = np.interp(common_time, sd_data['timestamp'], sd_data['stateEstimate.z'])
-    opti_z_interp = np.interp(common_time, opti_data['timestamp'], opti_data['y'])
+    # --- downsampled SD data for faster lag search ---
+    ds_factor = 5  # increase for more speed, decrease for more accuracy
+    t_sd = t_sd_full[::ds_factor]
+    z_sd = z_sd_full[::ds_factor]
 
-    # --- Find optimal lag using MSE ---
-    dt = common_time[1] - common_time[0]
-    max_shift = int(len(common_time) / 2)  # allow half-window shift
+    # OptiTrack original time and z
+    t_opti = opti_data['timestamp'].to_numpy()
+    z_opti = opti_data['y'].to_numpy()
+
+    # Time step for lag search: use median SD sampling interval
+    dt = np.median(np.diff(t_sd))
+    max_shift_seconds = 10
+    max_shift = int(np.round(max_shift_seconds / dt))
     lags = np.arange(-max_shift, max_shift + 1)
-    mse_values = []
 
-    for lag in lags:
-        shifted_opti = np.interp(common_time, common_time + lag * dt, opti_z_interp)
-        mse = np.mean((sd_z_interp - shifted_opti) ** 2)
-        mse_values.append(mse)
+    mse_values = np.empty_like(lags, dtype=float)
 
-    mse_values = np.array(mse_values)
-    best_lag = lags[np.argmin(mse_values)]
+    for i, lag in enumerate(lags):
+        time_offset = lag * dt
+        # Shift OptiTrack time
+        t_opti_shifted = t_opti + time_offset
+
+        # Determine overlapping time window between SD and shifted Opti
+        t_min = max(t_sd[0], t_opti_shifted[0])
+        t_max = min(t_sd[-1], t_opti_shifted[-1])
+        if t_max <= t_min:
+            mse_values[i] = np.inf
+            continue
+
+        # Restrict SD timestamps to that overlapping window
+        mask_sd = (t_sd >= t_min) & (t_sd <= t_max)
+        if not np.any(mask_sd):
+            mse_values[i] = np.inf
+            continue
+
+        t_sd_overlap = t_sd[mask_sd]
+        z_sd_overlap = z_sd[mask_sd]
+
+        # Interpolate shifted OptiTrack z onto the overlapping SD timestamps
+        z_opti_interp = np.interp(t_sd_overlap, t_opti_shifted, z_opti)
+
+        # MSE on overlapping region only
+        diff = z_sd_overlap - z_opti_interp
+        mse_values[i] = np.mean(diff * diff)
+
+    # Best lag
+    best_idx = np.argmin(mse_values)
+    best_lag = lags[best_idx]
     time_offset = best_lag * dt
 
-    # --- Plot results ---
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
+    print(f"[Sync-MSE] Optimal time offset (s): {time_offset:.3f}")
+    opti_data.loc[:, 'timestamp'] += time_offset
 
-    # Plot aligned signals
-    shifted_opti_best = np.interp(common_time, common_time + time_offset, opti_z_interp)
-    ax1.plot(common_time, sd_z_interp, label='SD Z-axis')
-    ax1.plot(common_time, opti_z_interp, label='Opti Z-axis (original)')
-    ax1.plot(common_time, shifted_opti_best, label=f'Opti Z-axis (shifted by {time_offset:.3f}s)', linestyle='--')
+    # --- Diagnostic plot using full‑rate SD and shifted Opti ---
+    t_opti_shifted = opti_data['timestamp'].to_numpy()
+    z_opti_shifted_interp = np.interp(t_sd_full, t_opti_shifted, z_opti)
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), sharex=False)
+
+    # Plot aligned signals on SD time axis
+    ax1.plot(t_sd_full, z_sd_full, label='SD Z-axis')
+    ax1.plot(t_sd_full, z_opti_shifted_interp,
+             label=f'Opti Z-axis (shifted by {time_offset:.3f}s)', linestyle='--')
+    ax1.set_xlabel('Time (s)')
     ax1.set_ylabel('Z Position')
-    ax1.set_title('Optimal alignment based on MSE')
+    ax1.set_title('Optimal alignment based on MSE (SD time grid)')
     ax1.legend()
     ax1.grid(True)
 
-    # Plot MSE vs lag
+    # Plot MSE vs lag (in seconds)
     lag_times = lags * dt
     ax2.plot(lag_times, mse_values, label='MSE vs Time Lag')
-    ax2.axvline(time_offset, color='r', linestyle='--', label=f'Selected Offset = {time_offset:.3f}s')
+    ax2.axvline(time_offset, color='r', linestyle='--',
+                label=f'Selected Offset = {time_offset:.3f}s')
     ax2.set_xlabel('Time Lag (s)')
     ax2.set_ylabel('MSE')
     ax2.legend()
     ax2.grid(True)
 
+    plt.tight_layout()
     plt.show()
-
-    print(f"[Sync-MSE] Optimal time offset (s): {time_offset:.3f}")
-    opti_data.loc[:, 'timestamp'] += time_offset
-
+    
     return opti_data
-
 
 # ==========================
 # VELOCITY PROCESSING
@@ -233,7 +266,7 @@ def add_sd_velocities(sd_df):
     ``vx_body_sd``, ``vy_body_sd``, ``vz_body_sd``.
     """
     # Convert roll, pitch, yaw to quaternion
-    r = R.from_euler('xyz', sd_df[['stateEstimate.roll', 'stateEstimate.pitch', 'stateEstimate.yaw']].values, degrees=True)
+    r = R.from_euler('zyx', sd_df[['stateEstimate.yaw', 'stateEstimate.pitch', 'stateEstimate.roll']].values, degrees=True)
     quat = r.as_quat()
     sd_df[['qx_sd', 'qy_sd', 'qz_sd', 'qw_sd']] = quat
 
@@ -331,25 +364,28 @@ def plot_pred_vs_meas(sd_data):
 
 def plot_velocity_comparison(sd_data, opti_data):
     """Compare body‑frame velocities from estimator, OptiTrack and targets."""
-    fig, (ax1, ax2) = plt.subplots(2, 1, sharex=True, figsize=(8, 8))
+    fig, (ax1, ax2) = plt.subplots(2, 1, sharex=True, figsize=(5, 5))
     vx = sd_data["vx_body_sd"]
     vy = sd_data["vy_body_sd"]
-    target_vx = sd_data["posCtl.targetVX"]
-    target_vy = sd_data["posCtl.targetVY"]
-    
+    target_vx = sd_data.get("posCtl.targetVX")
+    target_vy = sd_data.get("posCtl.targetVY")
+
     plot_comparison(ax1, sd_data["timestamp"], vx,
                     "est body vx",
                     opti_data["timestamp"], opti_data["vx_body"],
                     "opti body vx", "velocity [m/s]",
                     sd_data["timestamp"], target_vx, 
-                    "target vx", ylim=0.7)
+                    "target vx", ylim=1.4)
 
     plot_comparison(ax2, sd_data["timestamp"], vy,
                     "est body vy",
                     opti_data["timestamp"], opti_data["vy_body"],
                     "opti body vy", "velocity [m/s]",
                     sd_data["timestamp"], target_vy, 
-                    "target vy", ylim=0.7)
+                    "target vy", ylim=1.4)
+    
+    for ax in [ax1, ax2]:
+        ax.set_xlim(0, 25)
     plt.tight_layout()
 
 
@@ -363,28 +399,32 @@ def plot_position_comparison(sd_data, opti_data):
         return result - result.iloc[0] + series.dropna().iloc[0]
 
     x = sd_data["stateEstimate.x"].rolling(CONFIG["smooth_windows"]["position"]).mean()
-    x = x - x.dropna().iloc[0]  # normalize to start at 0
+    # x = x - x.dropna().iloc[0]  # normalize to start at 0
     y = sd_data["stateEstimate.y"].rolling(CONFIG["smooth_windows"]["position"]).mean()
-    y = y - y.dropna().iloc[0]  # normalize to start at 0
+    # y = y - y.dropna().iloc[0]  # normalize to start at 0
     z = sd_data["stateEstimate.z"].rolling(CONFIG["smooth_windows"]["position"]).mean()
 
     x_int = integrate(sd_data["stateEstimate.vx"].rolling(10).mean())
     y_int = integrate(sd_data["stateEstimate.vy"].rolling(10).mean())
 
+    # plot_comparison(ax1, sd_data["timestamp"], x,
+    #                 "est x",
+    #                 opti_data["timestamp"], opti_data["z"].rolling(10).mean(),
+    #                 "opti x", "x [m]", sd_data["timestamp"], x_int, "integrated x")
     plot_comparison(ax1, sd_data["timestamp"], x,
                     "est x",
                     opti_data["timestamp"], opti_data["z"].rolling(10).mean(),
-                    "opti x", "x [m]", sd_data["timestamp"], x_int, "integrated x")
+                    "opti x", "x [m]", sd_data["timestamp"], sd_data.get("locSrv.x"), "opti x sd")
 
     plot_comparison(ax2, sd_data["timestamp"], y,
                     "est y",
                     opti_data["timestamp"], opti_data["x"].rolling(5).mean(),
-                    "opti y", "y [m]", sd_data["timestamp"], y_int, "integrated y")
+                    "opti y", "y [m]", sd_data["timestamp"], sd_data.get("locSrv.y"), "opti y sd")
 
     plot_comparison(ax3, sd_data["timestamp"], z,
                     "est z",
                     opti_data["timestamp"], opti_data["y"].rolling(5).mean(),
-                    "opti z", "z [m]")
+                    "opti z", "z [m]", ylim=1.4)
     plt.tight_layout()
 
 
@@ -392,31 +432,38 @@ def plot_attitude_comparison(sd_data, opti_data):
     """Compare estimated attitude with OptiTrack attitude and commands."""
     valid_quat = opti_data[['qx', 'qy', 'qz', 'qw']].notna().all(axis=1)
     opti_data_valid = opti_data[valid_quat]
-    opti_headings = R.from_quat(opti_data_valid[['qz', 'qx', 'qy', 'qw']].values).as_euler('xyz', degrees=True)
+    opti_headings = R.from_quat(opti_data_valid[['qz', 'qx', 'qy', 'qw']].values).as_euler('zyx', degrees=True)
+    # valid_quat = sd_data[["locSrv.qx", "locSrv.qy", "locSrv.qz", "locSrv.qw"]].notna().all(axis=1)
+    # opti_data_valid = sd_data[valid_quat]
+    # opti_headings = R.from_quat(opti_data_valid[["locSrv.qx", "locSrv.qy", "locSrv.qz", "locSrv.qw"]].values).as_euler('zyx', degrees=True)
     opti_pitch = pd.Series(medfilt(-opti_headings[:, 1], 9))  # Extract pitch
-    opti_roll = pd.Series(medfilt(opti_headings[:, 0], 9))   # Extract roll
-    opti_yaw = pd.Series(medfilt(opti_headings[:, 2], 9))  # Extract yaw (heading)
-    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(12, 8), sharex=True)
+    opti_roll = pd.Series(medfilt(opti_headings[:, 2], 9))   # Extract roll
+    opti_yaw = pd.Series(medfilt(opti_headings[:, 0], 9))  # Extract yaw (heading)
+    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(5, 5), sharex=True)
 
     # opti_pitch  = compute_filtered(
     #     opti_pitch, opti_data_valid['timestamp'], CONFIG["median_filter_kernel"], CONFIG["velocity_smooth"]["vx"])
 
-    plot_comparison(ax1, sd_data['timestamp'], sd_data['stateEstimate.pitch'].rolling(10).mean(), 'est pitch',
+    plot_comparison(ax1, 
+                    sd_data['timestamp'], sd_data['stateEstimate.pitch'], 'est pitch',
                     opti_data_valid['timestamp'], opti_pitch, 'opti pitch',
                     'Pitch [deg]',
-                    sd_data['timestamp'], sd_data['controller.pitch'], 'pitch command', ylim=20)
+                    sd_data['timestamp'], sd_data.get('controller.pitch'), 'pitch command', ylim=40)
 
-    plot_comparison(ax2, sd_data['timestamp'], sd_data['stateEstimate.roll'].rolling(10).mean(), 'est roll',
+    plot_comparison(ax2, sd_data['timestamp'], sd_data['stateEstimate.roll'], 'est roll',
                     opti_data_valid['timestamp'], opti_roll, 'opti roll',
                     'Roll [deg]',
-                    sd_data['timestamp'], sd_data['controller.roll'], 'roll command', ylim=20)
+                    sd_data['timestamp'], sd_data.get('controller.roll'), 'roll command', ylim=40)
 
-    plot_comparison(ax3, sd_data['timestamp'], sd_data['stateEstimate.yaw'].rolling(10).mean(), 'est yaw',
-                    opti_data_valid['timestamp'], opti_yaw - opti_yaw[0], 'opti yaw',
+    plot_comparison(ax3, sd_data['timestamp'], sd_data['stateEstimate.yaw'], 'est yaw',
+                    opti_data_valid['timestamp'], opti_yaw, 'opti yaw',
                     'Heading [deg]',
-                    sd_data['timestamp'], sd_data['controller.yaw'], 'yaw command', ylim=60)
+                    sd_data['timestamp'], sd_data.get('controller.yaw'), 'yaw command', ylim=60)
 
     ax3.set_xlabel('Timestamp (s)')
+
+    for ax in [ax1, ax2, ax3]:
+        ax.set_xlim(0, 25)
     plt.tight_layout()
 
 
@@ -436,8 +483,9 @@ def main():
     sd_data = add_sd_velocities(sd_data)
 
     # --- synchronize by z-axis ---
+    t = time.time()
     opti_data = synchronize_by_z(sd_data, opti_data)
-
+    print(t - time.time())
 
     # plot_motion_and_gyro(sd_data)
     plot_pred_vs_meas(sd_data)
