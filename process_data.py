@@ -8,7 +8,7 @@ from scipy.integrate import cumulative_trapezoid
 from utils.state_estimator import MahonyIMU
 import os
 import argparse
-import config
+import data_loader
 
 WINDOW_SIZE = 16
 TARGET_FFT_SIZE = 256
@@ -641,7 +641,7 @@ if __name__ == "__main__":
         help="Flight experiment name (e.g. hover1, climb2, lateral1)",
     )
     args = parser.parse_args()
-    cfg = config.load(args.flight)
+    cfg = data_loader.load(args.flight)
     
     # OptiTrack z,x,y --> x,y,z
 
@@ -650,7 +650,7 @@ if __name__ == "__main__":
     g0 = 9.80665  # m/s
 
     # Columns to use to sync the optitrack and IMU data
-    columns_sync = ["acc.z", "pitch", "roll", "yaw"]
+    columns_sync = ["pitch", "roll", "yaw"]
     show = True
 
     body_to_CoM = np.array([+0.001, 0.0, -0.13])
