@@ -109,6 +109,7 @@ class FlapperLogger:
         show_wings: bool = True,
         show_axes: bool = True,
         show_dihedral: bool = True,
+        show_dihedral_quat: bool = False,
         show_position: bool = True,
         window_size: int = 16,
         fft_size: int = 256,
@@ -125,6 +126,7 @@ class FlapperLogger:
         self.show_wings = show_wings
         self.show_axes = show_axes
         self.show_dihedral = show_dihedral
+        self.show_dihedral_quat = show_dihedral_quat
         self.show_position = show_position
 
         self.window_size = window_size
@@ -163,6 +165,9 @@ class FlapperLogger:
 
         if self.show_dihedral:
             self._log_dihedral_frequency(i)
+
+        if self.show_dihedral_quat:
+            self._log_dihedral_quat(i)
 
         if self.show_position:
             self._log_position(i)
@@ -288,6 +293,7 @@ class FlapperLogger:
         body = _pt(self.df, "fb", i, p)
         top_marker = _pt(self.df, "fb1", i, p)
         quat_body = _quat(self.df, "fbq", i, p)
+        offset = np.array([0.01, 0, 0])
 
         if np.any(np.isnan(quat_body)) or np.linalg.norm(quat_body) == 0:
             return
@@ -300,7 +306,7 @@ class FlapperLogger:
             wing_root = _pt(self.df, f"fb{wing}w", i, p)
             wing_last = _pt(self.df, f"fb{wing}w3", i, p)
 
-            BA = body - top_marker
+            BA = body - top_marker + offset
             BC = wing_root - body
             norm_dihedral = np.cross(BA, BC)
 
@@ -323,6 +329,39 @@ class FlapperLogger:
 
             dihedral = _calculate_dihedral_angle(forward_body, norm_dihedral)
             rr.log(f"/dihedral/dihedral_{label[0].upper()}", rr.Scalars(dihedral))
+
+    def _log_dihedral_quat(self, i: int) -> None:
+        """Quaternion-based dihedral: project wing vector onto the body
+        frontal plane (perpendicular to forward axis) using the body
+        quaternion directly.  Avoids cross-product noise."""
+        p = self.prefix
+        quat_body = _quat(self.df, "fbq", i, p)
+
+        if np.any(np.isnan(quat_body)) or np.linalg.norm(quat_body) == 0:
+            return
+
+        r_body = R.from_quat(quat_body, scalar_first=False)
+        forward_body = r_body.apply([0, 1, 0])   # forward
+        lateral_body = r_body.apply([1, 0, 0])    # lateral
+        up_body      = r_body.apply([0, 0, 1])    # up
+
+        for wing, label in (("r", "right"), ("l", "left")):
+            wing_root = _pt(self.df, f"fb{wing}w", i, p)
+            wing_last = _pt(self.df, f"fb{wing}w3", i, p)
+
+            wing_vec = wing_last - wing_root
+            # Remove forward component → project onto frontal plane
+            wing_in_plane = wing_vec - np.dot(wing_vec, forward_body) * forward_body
+
+            norm = np.linalg.norm(wing_in_plane)
+            if norm < 1e-9:
+                continue
+
+            dihedral = np.arctan2(
+                np.dot(wing_in_plane, up_body),
+                np.dot(wing_in_plane, lateral_body),
+            )
+            rr.log(f"/dihedral/dihedral_quat_{label[0].upper()}", rr.Scalars(dihedral))
 
 
 if __name__ == "__main__":
