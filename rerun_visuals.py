@@ -49,9 +49,8 @@ def _calculate_dihedral_angle(forward_body, norm_dihedral):
     return angle if cross_product[2] >= 0 else -angle
 
 
-def _pt(df, col, i):
+def _pt(df, col, i, prefix=""):
     """Read a ZXY OptiTrack point and return it in the rerun XYZ frame."""
-    prefix = ""
     return np.array([
         df[f"{prefix}{col}z"].iloc[i],
         df[f"{prefix}{col}x"].iloc[i],
@@ -59,9 +58,8 @@ def _pt(df, col, i):
     ])
 
 
-def _quat(df, col, i):
+def _quat(df, col, i, prefix=""):
     """Read a ZXY OptiTrack quaternion and return it in the rerun frame."""
-    prefix = ""
     return np.array([
         df[f"{prefix}{col}z"].iloc[i],
         df[f"{prefix}{col}x"].iloc[i],
@@ -106,6 +104,7 @@ class FlapperLogger:
         marker_radius: float = 0.02,
         line_radius: float = 0.007,
         axes_radius: float = 0.002,
+        prefix: str = "",
         show_body: bool = True,
         show_wings: bool = True,
         show_axes: bool = True,
@@ -117,6 +116,7 @@ class FlapperLogger:
         freq_range: tuple[float, float] = (5, 25),
     ):
         self.df = df
+        self.prefix = prefix
         self.marker_radius = marker_radius
         self.line_radius = line_radius
         self.axes_radius = axes_radius
@@ -138,7 +138,7 @@ class FlapperLogger:
 
         # Pre-compute number of body markers once
         self._n_body_markers = sum(
-            1 for c in df.columns if re.match(r"^fb\d+x$", c)
+            1 for c in df.columns if re.match(rf"^{re.escape(prefix)}fb\d+x$", c)
         )
 
     # ------------------------------------------------------------------
@@ -172,11 +172,12 @@ class FlapperLogger:
     # ------------------------------------------------------------------
 
     def _log_body_markers(self, i: int) -> None:
+        p = self.prefix
         for idx in range(1, self._n_body_markers + 1):
             rr.log(
                 f"/flapper/fb_body_{idx}",
                 rr.Points3D(
-                    _pt(self.df, f"fb{idx}", i),
+                    _pt(self.df, f"fb{idx}", i, p),
                     colors=[0, 255, 0],
                     radii=[self.marker_radius],
                 ),
@@ -184,15 +185,16 @@ class FlapperLogger:
         rr.log(
             "/flapper/fb_body",
             rr.Points3D(
-                _pt(self.df, "fb", i),
+                _pt(self.df, "fb", i, p),
                 colors=[0, 255, 0],
                 radii=[self.marker_radius],
             ),
         )
 
     def _log_body_strips(self, i: int) -> None:
-        fb = _pt(self.df, "fb", i)
-        pts = {n: _pt(self.df, f"fb{n}", i) for n in range(1, 6)}
+        p = self.prefix
+        fb = _pt(self.df, "fb", i, p)
+        pts = {n: _pt(self.df, f"fb{n}", i, p) for n in range(1, 6)}
 
         rr.log(
             "/flapper/fb_body_strips",
@@ -208,7 +210,7 @@ class FlapperLogger:
         )
 
     def _log_position(self, i: int) -> None:
-        pt = _pt(self.df, "fb", i)
+        pt = _pt(self.df, "fb", i, self.prefix)
         rr.log("/position/x", rr.Scalars(pt[0]))
         rr.log("/position/y", rr.Scalars(pt[1]))
         rr.log("/position/z", rr.Scalars(pt[2]))
@@ -220,11 +222,12 @@ class FlapperLogger:
     def _log_wing_markers(self, i: int, wing: str) -> None:
         color = [255, 0, 0] if wing == "right" else [0, 0, 255]
         w = wing[0]
+        p = self.prefix
         for idx in (1, 2, 3):
             rr.log(
                 f"/flapper/fb_{wing}_wing_{idx}",
                 rr.Points3D(
-                    _pt(self.df, f"fb{w}w{idx}", i),
+                    _pt(self.df, f"fb{w}w{idx}", i, p),
                     colors=color,
                     radii=[self.marker_radius],
                 ),
@@ -233,13 +236,14 @@ class FlapperLogger:
     def _log_wing_strips(self, i: int, wing: str) -> None:
         color = [255, 0, 0] if wing == "right" else [0, 0, 255]
         w = wing[0]
+        p = self.prefix
         rr.log(
             f"/flapper/fb_{w}w",
             rr.LineStrips3D(
                 [
-                    _pt(self.df, f"fb{w}w1", i),
-                    _pt(self.df, f"fb{w}w2", i),
-                    _pt(self.df, f"fb{w}w3", i),
+                    _pt(self.df, f"fb{w}w1", i, p),
+                    _pt(self.df, f"fb{w}w2", i, p),
+                    _pt(self.df, f"fb{w}w3", i, p),
                 ],
                 radii=[self.line_radius] * 3,
                 colors=[color] * 3,
@@ -251,8 +255,8 @@ class FlapperLogger:
     # ------------------------------------------------------------------
 
     def _log_body_axes(self, i: int) -> None:
-        origin = _pt(self.df, "fb", i)
-        quat = _quat(self.df, "fbq", i)
+        origin = _pt(self.df, "fb", i, self.prefix)
+        quat = _quat(self.df, "fbq", i, self.prefix)
         if np.any(np.isnan(quat)) or np.linalg.norm(quat) == 0:
             return
         r = R.from_quat(quat).apply(np.eye(3))
@@ -272,9 +276,10 @@ class FlapperLogger:
     # ------------------------------------------------------------------
 
     def _log_dihedral_frequency(self, i: int) -> None:
-        body = _pt(self.df, "fb", i)
-        top_marker = _pt(self.df, "fb1", i)
-        quat_body = _quat(self.df, "fbq", i)
+        p = self.prefix
+        body = _pt(self.df, "fb", i, p)
+        top_marker = _pt(self.df, "fb1", i, p)
+        quat_body = _quat(self.df, "fbq", i, p)
 
         if np.any(np.isnan(quat_body)) or np.linalg.norm(quat_body) == 0:
             return
@@ -284,8 +289,8 @@ class FlapperLogger:
             ("r", self._angle_values_R, "right"),
             ("l", self._angle_values_L, "left"),
         ):
-            wing_root = _pt(self.df, f"fb{wing}w", i)
-            wing_last = _pt(self.df, f"fb{wing}w3", i)
+            wing_root = _pt(self.df, f"fb{wing}w", i, p)
+            wing_last = _pt(self.df, f"fb{wing}w3", i, p)
 
             BA = body - top_marker
             BC = wing_root - body
@@ -331,8 +336,10 @@ if __name__ == "__main__":
     cfg = load(args.flight)
 
     if args.processed:
-        df = pd.read_csv(cfg.processed_path)
+        df = pd.read_csv(f"{cfg.processed_path}{cfg.flight_exp}-processed.csv")
+        prefix = "optitrack."
     else:
+        prefix = ""
         df = pd.read_csv(
             cfg.optitrack_path,
             skiprows=7,
@@ -346,6 +353,7 @@ if __name__ == "__main__":
 
     logger = FlapperLogger(
         df,
+        prefix=prefix,
         show_body=True,
         show_wings=True,
         show_axes=True,
