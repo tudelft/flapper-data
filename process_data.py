@@ -1,10 +1,3 @@
-"""
-Processes onboard and optitrack data 
-
-Federico Angioni
-"""
-
-
 import pandas as pd
 import numpy as np
 from scipy.spatial.transform import Rotation as R
@@ -14,29 +7,14 @@ import matplotlib.pyplot as plt
 from scipy.integrate import cumulative_trapezoid
 from utils.state_estimator import MahonyIMU
 import os
+import argparse
 import config
-
-
 
 WINDOW_SIZE = 16
 TARGET_FFT_SIZE = 256
 FREQ_RANGE = (5, 25)
 
 FREE_FLIGHT = False
-
-# OptiTrack z,x,y --> x,y,z
-
-onboard_freq = 200  # Hz
-filter_cutoff_freq = 2  # Hz
-g0 = 9.80665  # m/s
-
-# Columns to use to sync the optitrack and IMU data
-columns_sync = ["acc.z", "pitch", "roll", "yaw"]
-show = True
-
-
-
-body_to_CoM = np.array([+0.001, 0.0, -0.13])
 
 def get_optitrack_meta(optitrack_csv):
     print("Obtaining the optitrack metadata ...")
@@ -578,12 +556,12 @@ def orient_onboard(data, sampling_freq, time_shift):
     return oriented_data
 
 
-def optitrack_pipeline(data, filter_freq, CoM_vector):
+def optitrack_pipeline(data, filter_freq, CoM_vector, optitrack_path):
 
     print("Processing the Optitrack data ...")
 
     # Get Optitrack meta data
-    optitrack_meta = get_optitrack_meta(config.optitrack_path)
+    optitrack_meta = get_optitrack_meta(optitrack_path)
     optitrack_fps = int(float(optitrack_meta["Capture Frame Rate"]))
 
     # Handle NaNs in both dataframes
@@ -654,18 +632,41 @@ def sync_dataframes(onboard, optitrack, optitrack_fps, cols_sync):
 
 
 if __name__ == "__main__":
+
+    parser = argparse.ArgumentParser(description="Process flapper flight data")
+    parser.add_argument(
+        "flight",
+        nargs="?",
+        default="hover1",
+        help="Flight experiment name (e.g. hover1, climb2, lateral1)",
+    )
+    args = parser.parse_args()
+    cfg = config.load(args.flight)
+    
+    # OptiTrack z,x,y --> x,y,z
+
+    onboard_freq = 200  # Hz
+    filter_cutoff_freq = 10  # Hz
+    g0 = 9.80665  # m/s
+
+    # Columns to use to sync the optitrack and IMU data
+    columns_sync = ["acc.z", "pitch", "roll", "yaw"]
+    show = True
+
+    body_to_CoM = np.array([+0.001, 0.0, -0.13])
+
     # Read the .csv file into a pandas df
     optitrack_data = pd.read_csv(
-        config.optitrack_path,
+        cfg.optitrack_path,
         skiprows=7,
-        usecols=range(1, len(config.optitrack_cols) + 1),
-        names=config.optitrack_cols,
+        usecols=range(1, len(cfg.optitrack_cols) + 1),
+        names=cfg.optitrack_cols,
         header=None,
     )
 
-    onboard_data = pd.read_csv(config.onboard_path, header=0, names=config.onboard_cols)
+    onboard_data = pd.read_csv(cfg.onboard_path)
 
-    optitrack_fps, optitrack_processed = optitrack_pipeline(optitrack_data, filter_cutoff_freq, body_to_CoM)
+    optitrack_fps, optitrack_processed = optitrack_pipeline(optitrack_data, filter_cutoff_freq, body_to_CoM, cfg.optitrack_path)
 
     onboard_processed = onboard_pipeline(onboard_data, onboard_freq, filter_cutoff_freq, optitrack_fps)
 
@@ -673,10 +674,10 @@ if __name__ == "__main__":
 
 
     # Save merged DataFrame
-    os.makedirs(os.path.dirname(config.processed_path), exist_ok=True)
-    processed_merged.to_csv(f"{config.processed_path}{config.flight_exp}-processed.csv", index=False)
+    os.makedirs(os.path.dirname(cfg.processed_path), exist_ok=True)
+    processed_merged.to_csv(f"{cfg.processed_path}{cfg.flight_exp}-processed.csv", index=False)
 
-    print("Processed data saved at", f"{config.processed_path}{config.flight_exp}-processed.csv")
+    print("Processed data saved at", f"{cfg.processed_path}{cfg.flight_exp}-processed.csv")
     # # Process the onboard data at 500 Hz
     # onboard_data = pd.read_csv(onboard_csv, header=0, names=names_onboard)
     # oriented_data = orient_onboard(onboard_data, onboard_freq, time_shift)

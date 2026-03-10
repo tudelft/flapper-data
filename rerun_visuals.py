@@ -3,6 +3,7 @@ import rerun as rr
 import rerun.blueprint as rrb
 import numpy as np
 from scipy.spatial.transform import Rotation as R
+import argparse
 import config
 
 wing_body_distance = 0.073
@@ -26,11 +27,8 @@ RUN_PROCESSED = True
 
 if RUN_PROCESSED:
     prepend = "optitrack."
-    data_path = f"data/processed/{config.flight_exp}/{config.flight_exp}-processed.csv"
-
 else:
     prepend = ""
-    data_path = f"data/raw/{config.flight_exp}/optitrack-{config.flight_exp}.csv"
 
 
 def mirror_point_through_plane(P, A, B, C):
@@ -421,6 +419,21 @@ def log_dihedral_frequency(df, i):
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Rerun visuals for flapper flight data")
+    parser.add_argument(
+        "flight",
+        nargs="?",
+        default="hover1",
+        help="Flight experiment name (e.g. hover1, climb2, lateral1)",
+    )
+    args = parser.parse_args()
+    cfg = config.load(args.flight)
+
+    if RUN_PROCESSED:
+        data_path = f"data/processed/{cfg.flight_exp}/{cfg.flight_exp}-processed.csv"
+    else:
+        data_path = f"data/raw/{cfg.flight_exp}/optitrack-{cfg.flight_exp}.csv"
+
     # Load the data from a CSV file
     names = [
         "time",
