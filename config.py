@@ -69,3 +69,12 @@ def load(flight: str) -> Config:
         optitrack_path=optitrack_path,
         optitrack_cols=_parse_optitrack_columns(optitrack_path),
     )
+
+
+if __name__ == "__main__":
+    test_flight = "flight_001"
+
+    cfg = load(test_flight)
+
+    print(cfg.optitrack_cols)
+
