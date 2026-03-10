@@ -1,0 +1,33 @@
+# Per-dataset configuration.
+# yaw_offset: degrees to rotate the rigid-body frame so that
+#             the x-axis (red arrow) points forward consistently.
+#             Positive = counter-clockwise when viewed from above.
+
+defaults:
+  yaw_offset: 0
+
+datasets:
+  hover1:
+    yaw_offset: 0
+  hover2:
+    yaw_offset: 0
+  climb1:
+    yaw_offset: 0
+  climb2:
+    yaw_offset: 0
+  lateral1:
+    yaw_offset: 0
+  lateral2:
+    yaw_offset: 0
+  longitudinal1:
+    yaw_offset: 0
+  longitudinal2:
+    yaw_offset: 0
+  yaw1:
+    yaw_offset: 0
+  yaw2:
+    yaw_offset: 0
+  flight_001:
+    yaw_offset: 90
+  flight_002:
+    yaw_offset: 90

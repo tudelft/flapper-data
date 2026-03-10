@@ -1,6 +1,11 @@
 import csv
 import re
 from dataclasses import dataclass
+from pathlib import Path
+
+import yaml
+
+_DATASETS_YAML = Path(__file__).parent / "datasets.yaml"
 
 # Mapping from OptiTrack rigid body names to short prefixes used in code.
 # Add entries here if new rigid bodies appear in your recordings.
@@ -18,6 +23,7 @@ class Config:
     onboard_path: str
     optitrack_path: str
     optitrack_cols: list
+    yaw_offset: float  # degrees – corrects rigid-body frame to consistent forward
 
 
 def _parse_optitrack_columns(csv_path):
@@ -59,15 +65,28 @@ def _parse_optitrack_columns(csv_path):
     return cols
 
 
+def _load_dataset_config(flight: str) -> dict:
+    """Load per-dataset overrides from datasets.yaml."""
+    if not _DATASETS_YAML.exists():
+        return {}
+    with open(_DATASETS_YAML) as f:
+        data = yaml.safe_load(f) or {}
+    defaults = data.get("defaults", {})
+    overrides = data.get("datasets", {}).get(flight, {})
+    return {**defaults, **overrides}
+
+
 def load(flight: str) -> Config:
     """Build and return a Config for the given flight experiment."""
     optitrack_path = f"data/raw/{flight}/optitrack-{flight}.csv"
+    ds_cfg = _load_dataset_config(flight)
     return Config(
         flight_exp=flight,
         processed_path=f"data/processed/{flight}/",
         onboard_path=f"data/raw/{flight}/onboard-{flight}.csv",
         optitrack_path=optitrack_path,
         optitrack_cols=_parse_optitrack_columns(optitrack_path),
+        yaw_offset=float(ds_cfg.get("yaw_offset", 0)),
     )
 
 

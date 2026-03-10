@@ -48,6 +48,18 @@ def _calculate_dihedral_angle(forward_body, norm_dihedral):
     )
     return angle if cross_product[2] >= 0 else -angle
 
+def _calculate_dihedral_dot_product(lateral_body, up_body, BC):
+    """Project BC onto the forward-lateral plane, then compute angle with lateral."""
+    # Remove the up component to project onto the forward-lateral plane
+    BC_proj = BC - np.dot(BC, up_body) * up_body
+    norm = np.linalg.norm(BC_proj)
+    if norm < 1e-9:
+        return 0.0
+    cos_angle = np.clip(
+        np.dot(BC_proj, lateral_body) / (norm * np.linalg.norm(lateral_body)),
+        -1.0, 1.0,
+    )
+    return np.arccos(cos_angle)
 
 def _pt(df, col, i, prefix=""):
     """Read a ZXY OptiTrack point and return it in the rerun XYZ frame."""
@@ -105,11 +117,11 @@ class FlapperLogger:
         line_radius: float = 0.007,
         axes_radius: float = 0.002,
         prefix: str = "",
+        yaw_offset: float = 0.0,
         show_body: bool = True,
         show_wings: bool = True,
         show_axes: bool = True,
         show_dihedral: bool = True,
-        show_dihedral_quat: bool = False,
         show_position: bool = True,
         window_size: int = 16,
         fft_size: int = 256,
@@ -122,11 +134,13 @@ class FlapperLogger:
         self.line_radius = line_radius
         self.axes_radius = axes_radius
 
+        # Pre-compute yaw correction rotation (applied to all quaternions)
+        self._yaw_correction = R.from_euler("z", yaw_offset, degrees=True)
+
         self.show_body = show_body
         self.show_wings = show_wings
         self.show_axes = show_axes
         self.show_dihedral = show_dihedral
-        self.show_dihedral_quat = show_dihedral_quat
         self.show_position = show_position
 
         self.window_size = window_size
@@ -165,9 +179,6 @@ class FlapperLogger:
 
         if self.show_dihedral:
             self._log_dihedral_frequency(i)
-
-        if self.show_dihedral_quat:
-            self._log_dihedral_quat(i)
 
         if self.show_position:
             self._log_position(i)
@@ -272,7 +283,7 @@ class FlapperLogger:
         quat = _quat(self.df, "fbq", i, self.prefix)
         if np.any(np.isnan(quat)) or np.linalg.norm(quat) == 0:
             return
-        r = R.from_quat(quat).apply(np.eye(3))
+        r = (R.from_quat(quat) * self._yaw_correction).apply(np.eye(3))
 
         rr.log(
             "/flapper/axes",
@@ -293,11 +304,15 @@ class FlapperLogger:
         body = _pt(self.df, "fb", i, p)
         top_marker = _pt(self.df, "fb1", i, p)
         quat_body = _quat(self.df, "fbq", i, p)
-        offset = np.array([0.01, 0, 0])
 
         if np.any(np.isnan(quat_body)) or np.linalg.norm(quat_body) == 0:
             return
-        forward_body = R.from_quat(quat_body, scalar_first=False).apply([0, 1, 0])
+        r = R.from_quat(quat_body, scalar_first=False) * self._yaw_correction
+        forward_body = r.apply([1, 0, 0])
+        lateral_body = r.apply([0, 1, 0])
+        up_body = r.apply([0, 0, 1])
+
+        offset = 0.007 * forward_body
 
         for wing, angle_buf, label in (
             ("r", self._angle_values_R, "right"),
@@ -306,8 +321,10 @@ class FlapperLogger:
             wing_root = _pt(self.df, f"fb{wing}w", i, p)
             wing_last = _pt(self.df, f"fb{wing}w3", i, p)
 
-            BA = body - top_marker + offset
-            BC = wing_root - body
+            BA = body - top_marker 
+            BC = wing_root - body - offset
+
+            # print(BC, offset)
             norm_dihedral = np.cross(BA, BC)
 
             wing_vec = wing_last - wing_root
@@ -328,42 +345,12 @@ class FlapperLogger:
                     rr.log(f"/frequency/frequency_{label}", rr.Scalars(freq))
 
             dihedral = _calculate_dihedral_angle(forward_body, norm_dihedral)
+            wing_lateral = -lateral_body if wing == "r" else lateral_body
+            dihedral_dotproduct = _calculate_dihedral_dot_product(wing_lateral, up_body, BC)
             rr.log(f"/dihedral/dihedral_{label[0].upper()}", rr.Scalars(dihedral))
+            rr.log(f"/dihedral/dihedral_dp_{label[0].upper()}", rr.Scalars(dihedral_dotproduct))
 
-    def _log_dihedral_quat(self, i: int) -> None:
-        """Quaternion-based dihedral: project wing vector onto the body
-        frontal plane (perpendicular to forward axis) using the body
-        quaternion directly.  Avoids cross-product noise."""
-        p = self.prefix
-        quat_body = _quat(self.df, "fbq", i, p)
-
-        if np.any(np.isnan(quat_body)) or np.linalg.norm(quat_body) == 0:
-            return
-
-        r_body = R.from_quat(quat_body, scalar_first=False)
-        forward_body = r_body.apply([0, 1, 0])   # forward
-        lateral_body = r_body.apply([1, 0, 0])    # lateral
-        up_body      = r_body.apply([0, 0, 1])    # up
-
-        for wing, label in (("r", "right"), ("l", "left")):
-            wing_root = _pt(self.df, f"fb{wing}w", i, p)
-            wing_last = _pt(self.df, f"fb{wing}w3", i, p)
-
-            wing_vec = wing_last - wing_root
-            # Remove forward component → project onto frontal plane
-            wing_in_plane = wing_vec - np.dot(wing_vec, forward_body) * forward_body
-
-            norm = np.linalg.norm(wing_in_plane)
-            if norm < 1e-9:
-                continue
-
-            dihedral = np.arctan2(
-                np.dot(wing_in_plane, up_body),
-                np.dot(wing_in_plane, lateral_body),
-            )
-            rr.log(f"/dihedral/dihedral_quat_{label[0].upper()}", rr.Scalars(dihedral))
-
-
+    
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Rerun visuals for flapper flight data")
     parser.add_argument(
@@ -401,6 +388,7 @@ if __name__ == "__main__":
     logger = FlapperLogger(
         df,
         prefix=prefix,
+        yaw_offset=cfg.yaw_offset,
         show_body=True,
         show_wings=True,
         show_axes=True,
