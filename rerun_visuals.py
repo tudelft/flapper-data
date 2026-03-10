@@ -223,6 +223,14 @@ class FlapperLogger:
         color = [255, 0, 0] if wing == "right" else [0, 0, 255]
         w = wing[0]
         p = self.prefix
+        rr.log(
+            f"/flapper/fb_{wing}_wing",
+            rr.Points3D(
+                _pt(self.df, f"fb{w}w", i, p),
+                colors=[255, 0, 255],
+                radii=[self.marker_radius],
+            ),
+        )
         for idx in (1, 2, 3):
             rr.log(
                 f"/flapper/fb_{wing}_wing_{idx}",
