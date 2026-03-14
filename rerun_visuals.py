@@ -48,19 +48,6 @@ def _calculate_dihedral_angle(forward_body, norm_dihedral):
     )
     return angle if cross_product[2] >= 0 else -angle
 
-def _calculate_dihedral_dot_product(lateral_body, up_body, BC):
-    """Project BC onto the forward-lateral plane, then compute angle with lateral."""
-    # Remove the up component to project onto the forward-lateral plane
-    BC_proj = BC - np.dot(BC, up_body) * up_body
-    norm = np.linalg.norm(BC_proj)
-    if norm < 1e-9:
-        return 0.0
-    cos_angle = np.clip(
-        np.dot(BC_proj, lateral_body) / (norm * np.linalg.norm(lateral_body)),
-        -1.0, 1.0,
-    )
-    return np.arccos(cos_angle)
-
 def _pt(df, col, i, prefix=""):
     """Read a ZXY OptiTrack point and return it in the rerun XYZ frame."""
     return np.array([
@@ -345,10 +332,33 @@ class FlapperLogger:
                     rr.log(f"/frequency/frequency_{label}", rr.Scalars(freq))
 
             dihedral = _calculate_dihedral_angle(forward_body, norm_dihedral)
-            wing_lateral = -lateral_body if wing == "r" else lateral_body
-            dihedral_dotproduct = _calculate_dihedral_dot_product(wing_lateral, up_body, BC)
             rr.log(f"/dihedral/dihedral_{label[0].upper()}", rr.Scalars(dihedral))
-            rr.log(f"/dihedral/dihedral_dp_{label[0].upper()}", rr.Scalars(dihedral_dotproduct))
+
+            # New dihedral calculate using top marker
+            # Vector from the top marker to the root, only for free flight now
+            offset = 0.007 * forward_body
+            wing_root = _pt(self.df, f"fb{wing}w3", i, p) if wing == "l" else _pt(self.df, f"fb{wing}w1", i, p)
+            top_to_root = wing_root - top_marker - offset
+
+            lateral_body_oriented =  - lateral_body if wing == "r" else lateral_body
+            projected = top_to_root - np.dot(top_to_root, up_body) * up_body
+            norm_proj = np.linalg.norm(projected)
+            norm_lat = np.linalg.norm(lateral_body_oriented)
+
+            if norm_proj < 1e-9 or norm_lat < 1e-9:
+                dihedral_new = 0.0
+            else:
+                denom = norm_proj * norm_lat
+                cos_angle = np.dot(lateral_body_oriented, projected) / denom
+                handedness = -1.0 if wing == "r" else 1.0
+                sin_angle = handedness * np.dot(
+                    np.cross(lateral_body_oriented, projected),
+                    up_body,
+                ) / denom
+                dihedral_new = np.arctan2(sin_angle, cos_angle)
+
+            rr.log(f"/dihedral/dihedralnew_{label[0].upper()}", rr.Scalars(dihedral_new))
+
 
     
 if __name__ == "__main__":
