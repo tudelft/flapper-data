@@ -2,9 +2,13 @@
 # yaw_offset: degrees to rotate the rigid-body frame so that
 #             the x-axis (red arrow) points forward consistently.
 #             Positive = counter-clockwise when viewed from above.
+# wing_marker_right: marker index used for the right-wing tip in dihedral_new.
+# wing_marker_left:  marker index used for the left-wing tip in dihedral_new.
 
 defaults:
   yaw_offset: 0
+  wing_marker_right: 2
+  wing_marker_left: 3
 
 datasets:
   hover1:
@@ -29,5 +33,9 @@ datasets:
     yaw_offset: 0
   flight_001:
     yaw_offset: 90
+    wing_marker_right: 1
+    wing_marker_left: 3
   flight_002:
     yaw_offset: 90
+    wing_marker_right: 1
+    wing_marker_left: 3

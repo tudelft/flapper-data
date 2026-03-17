@@ -24,6 +24,8 @@ class Config:
     optitrack_path: str
     optitrack_cols: list
     yaw_offset: float  # degrees – corrects rigid-body frame to consistent forward
+    wing_marker_right: int  # marker index for right-wing tip in dihedral_new
+    wing_marker_left: int   # marker index for left-wing tip in dihedral_new
 
 
 def _parse_optitrack_columns(csv_path):
@@ -87,6 +89,8 @@ def load(flight: str) -> Config:
         optitrack_path=optitrack_path,
         optitrack_cols=_parse_optitrack_columns(optitrack_path),
         yaw_offset=float(ds_cfg.get("yaw_offset", 0)),
+        wing_marker_right=int(ds_cfg.get("wing_marker_right", 2)),
+        wing_marker_left=int(ds_cfg.get("wing_marker_left", 3)),
     )
 
 

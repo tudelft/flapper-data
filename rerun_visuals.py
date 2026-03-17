@@ -105,6 +105,8 @@ class FlapperLogger:
         axes_radius: float = 0.002,
         prefix: str = "",
         yaw_offset: float = 0.0,
+        wing_marker_right: int = 2,
+        wing_marker_left: int = 3,
         show_body: bool = True,
         show_wings: bool = True,
         show_axes: bool = True,
@@ -114,6 +116,7 @@ class FlapperLogger:
         fft_size: int = 256,
         sample_rate: int = 100,
         freq_range: tuple[float, float] = (5, 25),
+        dihedral_offset_seconds: float = 2.0,
     ):
         self.df = df
         self.prefix = prefix
@@ -123,6 +126,7 @@ class FlapperLogger:
 
         # Pre-compute yaw correction rotation (applied to all quaternions)
         self._yaw_correction = R.from_euler("z", yaw_offset, degrees=True)
+        self._wing_marker = {"r": wing_marker_right, "l": wing_marker_left}
 
         self.show_body = show_body
         self.show_wings = show_wings
@@ -337,7 +341,7 @@ class FlapperLogger:
             # New dihedral calculate using top marker
             # Vector from the top marker to the root, only for free flight now
             offset = 0.007 * forward_body
-            wing_root = _pt(self.df, f"fb{wing}w3", i, p) if wing == "l" else _pt(self.df, f"fb{wing}w1", i, p)
+            wing_root = _pt(self.df, f"fb{wing}w{self._wing_marker[wing]}", i, p)
             top_to_root = wing_root - top_marker - offset
 
             lateral_body_oriented =  - lateral_body if wing == "r" else lateral_body
@@ -399,6 +403,8 @@ if __name__ == "__main__":
         df,
         prefix=prefix,
         yaw_offset=cfg.yaw_offset,
+        wing_marker_right=cfg.wing_marker_right,
+        wing_marker_left=cfg.wing_marker_left,
         show_body=True,
         show_wings=True,
         show_axes=True,
