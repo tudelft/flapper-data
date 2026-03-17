@@ -311,66 +311,109 @@ def process_optitrack(data, com_body, optitrack_fps):
 
     return processed_data   
 
-def process_frequency_dihedral(data, optitrack_fps):
-    body_pos_ref = np.asarray([data["fbz"], data["fbx"], data["fby"]])
-    wing_rootR_ref = np.array([data["fbrw2z"], data["fbrw2x"], data["fbrw2y"]])
-    wing_lastR_ref = np.array([data["fbrw3z"], data["fbrw3x"], data["fbrw3y"]])
+def process_frequency_dihedral(data, optitrack_fps, wing_marker_right=2, wing_marker_left=3, yaw_offset=0.0):
+    # Positions (N, 3) — OptiTrack ZXY → XYZ
+    top_marker = np.array([data["fb1z"], data["fb1x"], data["fb1y"]]).T
+    body_pos = np.array([data["fbz"], data["fbx"], data["fby"]]).T
 
-    wing_rootL_ref = np.array([data["fblw3z"], data["fblw3x"], data["fblw3y"]])
-    wing_lastL_ref = np.array([data["fblw1z"], data["fblw1x"], data["fblw1y"]])
-    top_body_marker_ref = np.array([data["fb1z"], data["fb1x"], data["fb1y"]])
-
-    # Rotational kinematics
+    # Rotational kinematics with yaw correction
     quats = np.vstack((data["fbqz"], data["fbqx"], data["fbqy"], data["fbqw"])).T
+    yaw_correction = R.from_euler("z", yaw_offset, degrees=True)
+    r = R.from_quat(quats, scalar_first=False) * yaw_correction
 
-    r = R.from_quat(quats, scalar_first=False)
+    forward_body = r.apply([1, 0, 0])  # (N, 3)
+    lateral_body = r.apply([0, 1, 0])
+    up_body = r.apply([0, 0, 1])
 
+    # Dihedral offset window: skip 2s, average 1s
+    start_frame = min(int(2.0 * optitrack_fps), len(data))
+    end_frame = min(start_frame + int(1.0 * optitrack_fps), len(data))
 
-    forward_body = r.apply([1, 0, 0])
-    backwards_body = r.apply([1, 0, 0])
+    wing_markers = {"l": wing_marker_left, "r": wing_marker_right}
+    dihedral = {}
 
-    # Define point B, center of body "fbx, fby, fbz" in optitrack
-    # Define point A, top of the drone, usually fb1x, ...
-    # Define point C, root of each wing
-    AB = top_body_marker_ref - body_pos_ref
-    AC_right = wing_rootR_ref - top_body_marker_ref
-    AC_left = wing_rootL_ref - top_body_marker_ref
+    for wing in ("l", "r"):
+        mk = wing_markers[wing]
+        wing_root = np.array([
+            data[f"fb{wing}w{mk}z"],
+            data[f"fb{wing}w{mk}x"],
+            data[f"fb{wing}w{mk}y"],
+        ]).T  # (N, 3)
 
-    norm_dihedral_right = np.cross(AB.T, AC_right.T)
-    norm_dihedral_left = np.cross(AB.T, AC_left.T)
+        top_to_root = wing_root - top_marker
 
-    dihedral_right = calculate_dihedral_angle(forward_body, norm_dihedral_right)
-    dihedral_left = 0 #calculate_dihedral_angle(backwards_body, norm_dihedral_left)
+        # Per-wing forward-component offset
+        ttr_body = r[start_frame:end_frame].inv().apply(
+            top_to_root[start_frame:end_frame]
+        )
+        fwd_offset = np.mean(ttr_body[:, 0])
 
-    right_wing_vector = (wing_lastR_ref - wing_rootR_ref).T
+        top_to_root = top_to_root - fwd_offset * forward_body
 
+        lateral_oriented = lateral_body if wing == "l" else -lateral_body
+
+        # Project onto body XY plane (remove up component)
+        up_dot = np.einsum("ij,ij->i", top_to_root, up_body)
+        projected = top_to_root - up_dot[:, np.newaxis] * up_body
+
+        norm_proj = np.linalg.norm(projected, axis=1)
+        norm_lat = np.linalg.norm(lateral_oriented, axis=1)
+        denom = norm_proj * norm_lat
+
+        cos_angle = np.einsum("ij,ij->i", lateral_oriented, projected) / denom
+        handedness = 1.0 if wing == "l" else -1.0
+        sin_angle = handedness * np.einsum(
+            "ij,ij->i", np.cross(lateral_oriented, projected), up_body
+        ) / denom
+
+        angle = np.arctan2(sin_angle, cos_angle)
+        angle[(norm_proj < 1e-9) | (norm_lat < 1e-9)] = 0.0
+        dihedral[wing] = angle
+
+    # Frequency computation (cross-product approach, unchanged)
+    wing_rootR = np.array([
+        data[f"fbrw{wing_marker_right}z"],
+        data[f"fbrw{wing_marker_right}x"],
+        data[f"fbrw{wing_marker_right}y"],
+    ])
+    wing_rootL = np.array([
+        data[f"fblw{wing_marker_left}z"],
+        data[f"fblw{wing_marker_left}x"],
+        data[f"fblw{wing_marker_left}y"],
+    ])
+    wing_lastR = np.array([data["fbrw3z"], data["fbrw3x"], data["fbrw3y"]])
+    wing_lastL = np.array([data["fblw1z"], data["fblw1x"], data["fblw1y"]])
+
+    AB = top_marker.T - body_pos.T  # (3, N)
+    norm_dihedral_right = np.cross(AB.T, (wing_rootR - top_marker.T).T)
+    norm_dihedral_left = np.cross(AB.T, (wing_rootL - top_marker.T).T)
 
     freq_right = calculate_frequency(
         norm_dihedral_right,
-        right_wing_vector,
+        (wing_lastR - wing_rootR).T,
         optitrack_fps,
         WINDOW_SIZE,
         TARGET_FFT_SIZE,
         FREQ_RANGE,
     )
-
-    left_wing_vector = (wing_lastL_ref - wing_rootL_ref).T
 
     freq_left = calculate_frequency(
         norm_dihedral_left,
-        left_wing_vector,
+        (wing_lastL - wing_rootL).T,
         optitrack_fps,
         WINDOW_SIZE,
         TARGET_FFT_SIZE,
         FREQ_RANGE,
     )
 
-    output = pd.DataFrame({"time":data["time"],
-                            "freq.right": freq_right,
-                            "freq.left": freq_left,
-                            "dihedral.right": dihedral_right,
-                            "dihedral.left": dihedral_left})
-    
+    output = pd.DataFrame({
+        "time": data["time"],
+        "freq.right": freq_right,
+        "freq.left": freq_left,
+        "dihedral.right": dihedral["r"],
+        "dihedral.left": dihedral["l"],
+    })
+
     return output
 
 
@@ -556,7 +599,7 @@ def orient_onboard(data, sampling_freq, time_shift):
     return oriented_data
 
 
-def optitrack_pipeline(data, filter_freq, CoM_vector, optitrack_path):
+def optitrack_pipeline(data, filter_freq, CoM_vector, optitrack_path, wing_marker_right=2, wing_marker_left=3, yaw_offset=0.0):
 
     print("Processing the Optitrack data ...")
 
@@ -567,7 +610,7 @@ def optitrack_pipeline(data, filter_freq, CoM_vector, optitrack_path):
     # Handle NaNs in both dataframes
     optitrack_data_nonan = handle_nan(data, optitrack_fps, 2)
 
-    optitrack_freq_dihedral = process_frequency_dihedral(optitrack_data_nonan, optitrack_fps)
+    optitrack_freq_dihedral = process_frequency_dihedral(optitrack_data_nonan, optitrack_fps, wing_marker_right, wing_marker_left, yaw_offset)
 
     optitrack_freq_dihedral = filter_data(
         optitrack_freq_dihedral, filter_freq, optitrack_fps
@@ -666,7 +709,7 @@ if __name__ == "__main__":
 
     onboard_data = pd.read_csv(cfg.onboard_path)
 
-    optitrack_fps, optitrack_processed = optitrack_pipeline(optitrack_data, filter_cutoff_freq, body_to_CoM, cfg.optitrack_path)
+    optitrack_fps, optitrack_processed = optitrack_pipeline(optitrack_data, filter_cutoff_freq, body_to_CoM, cfg.optitrack_path, cfg.wing_marker_right, cfg.wing_marker_left, cfg.yaw_offset)
 
     onboard_processed = onboard_pipeline(onboard_data, onboard_freq, filter_cutoff_freq, optitrack_fps)
 
@@ -687,7 +730,7 @@ if __name__ == "__main__":
 
     # Plot to verify
     if show:
-        fig, axes = plt.subplots(3, 1, figsize=(18, 6))
+        fig, axes = plt.subplots(4, 1, figsize=(18, 8))
 
         # After shifting
         axes[0].plot(processed_merged["time"], processed_merged["onboard.acc.x"], label="Onboard")
@@ -705,6 +748,12 @@ if __name__ == "__main__":
         axes[2].plot(processed_merged["time"], processed_merged["optitrack.acc.z"], label="OptiTrack (shifted)")
         axes[2].legend()
         axes[2].set_title("acc z")
+
+        axes[3].plot(processed_merged["time"], processed_merged["optitrack.dihedral.right"], label="Right")
+        axes[3].plot(processed_merged["time"], processed_merged["optitrack.dihedral.left"], label="Left")
+        axes[3].legend()
+        axes[3].set_title("dihedral")
+
         plt.tight_layout()
         plt.show()
 
