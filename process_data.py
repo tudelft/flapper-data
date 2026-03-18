@@ -689,7 +689,7 @@ if __name__ == "__main__":
     # OptiTrack z,x,y --> x,y,z
 
     onboard_freq = 200  # Hz
-    filter_cutoff_freq = 10  # Hz
+    filter_cutoff_freq = 6  # Hz
     g0 = 9.80665  # m/s
 
     # Columns to use to sync the optitrack and IMU data
@@ -730,7 +730,7 @@ if __name__ == "__main__":
 
     # Plot to verify
     if show:
-        fig, axes = plt.subplots(4, 1, figsize=(18, 8))
+        fig, axes = plt.subplots(5, 1, figsize=(18, 10))
 
         # After shifting
         axes[0].plot(processed_merged["time"], processed_merged["onboard.acc.x"], label="Onboard")
@@ -751,8 +751,15 @@ if __name__ == "__main__":
 
         axes[3].plot(processed_merged["time"], processed_merged["optitrack.dihedral.right"], label="Right")
         axes[3].plot(processed_merged["time"], processed_merged["optitrack.dihedral.left"], label="Left")
+        axes[3].set_ylim([-.25, .25])
         axes[3].legend()
         axes[3].set_title("dihedral")
+
+        axes[4].plot(processed_merged["time"], processed_merged["onboard.r"], label="Onboard")
+        axes[4].plot(processed_merged["time"], processed_merged["optitrack.r"], label="OptiTrack")
+        axes[4].set_ylim([-.25, .25])
+        axes[4].legend()
+        axes[4].set_title("yaw rate")
 
         plt.tight_layout()
         plt.show()
