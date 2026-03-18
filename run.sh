@@ -3,7 +3,7 @@ set -euo pipefail
 
 VENV=".venv"
 PYTHON="python"
-FLIGHTS=(hover1 hover2 climb1 climb2 lateral1 lateral2 longitudinal1 longitudinal2 yaw1 yaw2)
+FLIGHTS=(flight_001 flight_002 hover1 hover2 climb1 climb2 lateral1 lateral2 longitudinal1 longitudinal2 yaw1 yaw2)
 
 # Activate venv if present
 if [[ -d "$VENV" ]]; then

@@ -694,7 +694,7 @@ if __name__ == "__main__":
 
     # Columns to use to sync the optitrack and IMU data
     columns_sync = ["pitch", "roll", "yaw"]
-    show = True
+    show = False
 
     body_to_CoM = np.array([+0.001, 0.0, -0.13])
 

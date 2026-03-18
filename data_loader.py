@@ -84,7 +84,7 @@ def load(flight: str) -> Config:
     ds_cfg = _load_dataset_config(flight)
     return Config(
         flight_exp=flight,
-        processed_path=f"data/processed/{flight}/",
+        processed_path="data/processed/",
         onboard_path=f"data/raw/{flight}/onboard-{flight}.csv",
         optitrack_path=optitrack_path,
         optitrack_cols=_parse_optitrack_columns(optitrack_path),
