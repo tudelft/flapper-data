@@ -1,5 +1,5 @@
 [project]
-name = "process-flapper-data"
+name = "flapper-data"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
@@ -11,3 +11,7 @@ dependencies = [
     "rerun-sdk>=0.30.1",
     "scipy>=1.17.1",
 ]
+
+[build-system]
+requires = ["uv_build>=0.11.7,<0.12"]
+build-backend = "uv_build"

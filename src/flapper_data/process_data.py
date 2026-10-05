@@ -5,10 +5,10 @@ from math import gcd
 from scipy import signal
 import matplotlib.pyplot as plt
 from scipy.integrate import cumulative_trapezoid
-from utils.state_estimator import MahonyIMU
+from flapper_data.state_estimator import MahonyIMU
 import os
 import argparse
-import data_loader
+from flapper_data import data_loader
 
 WINDOW_SIZE = 16
 TARGET_FFT_SIZE = 256

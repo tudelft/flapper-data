@@ -1,14 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VENV=".venv"
-PYTHON="python"
+PYTHON="uv run python -m"
 FLIGHTS=(flight_001 flight_002 hover1 hover2 climb1 climb2 lateral1 lateral2 longitudinal1 longitudinal2 yaw1 yaw2)
-
-# Activate venv if present
-if [[ -d "$VENV" ]]; then
-    export PATH="$VENV/bin:$PATH"
-fi
 
 usage() {
     cat <<EOF
@@ -31,23 +25,23 @@ case "$1" in
     process)
         flight="${2:-hover1}"
         echo "Processing $flight..."
-        $PYTHON process_data.py "$flight"
+        $PYTHON flapper_data.process_data "$flight"
         ;;
     process-all)
         for flight in "${FLIGHTS[@]}"; do
             echo "Processing $flight..."
-            $PYTHON process_data.py "$flight"
+            $PYTHON flapper_data.process_data "$flight"
         done
         ;;
     rerun)
         flight="${2:-hover1}"
         echo "Rerunning visuals for $flight..."
-        $PYTHON rerun_visuals.py "$flight"
+        $PYTHON flapper_data.rerun_visuals "$flight"
         ;;
     rerun-all)
         for flight in "${FLIGHTS[@]}"; do
             echo "Rerunning visuals for $flight..."
-            $PYTHON rerun_visuals.py "$flight"
+            $PYTHON flapper_data.rerun_visuals "$flight"
         done
         ;;
     *)

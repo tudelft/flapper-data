@@ -1,41 +1,18 @@
-# Per-dataset configuration.
-# yaw_offset: degrees to rotate the rigid-body frame so that
-#             the x-axis (red arrow) points forward consistently.
-#             Positive = counter-clockwise when viewed from above.
-# wing_marker_right: marker index used for the right-wing tip in dihedral_new.
-# wing_marker_left:  marker index used for the left-wing tip in dihedral_new.
+# Per-flight settings. A flight that is not listed under `flights` uses `defaults`;
+# a listed flight only needs the settings that differ from them.
+#
+# yaw_offset    [deg] Rotates the OptiTrack rigid-body frame so that x (red arrow)
+#               points forward. Positive = counter-clockwise seen from above.
+# wing_markers  Marker on each wing used as reference point for the dihedral angle.
 
 defaults:
   yaw_offset: 0
-  wing_marker_right: 2
-  wing_marker_left: 3
+  wing_markers: {left: 3, right: 2}
 
-datasets:
-  hover1:
-    yaw_offset: 0
-  hover2:
-    yaw_offset: 0
-  climb1:
-    yaw_offset: 0
-  climb2:
-    yaw_offset: 0
-  lateral1:
-    yaw_offset: 0
-  lateral2:
-    yaw_offset: 0
-  longitudinal1:
-    yaw_offset: 0
-  longitudinal2:
-    yaw_offset: 0
-  yaw1:
-    yaw_offset: 0
-  yaw2:
-    yaw_offset: 0
+flights:
   flight_001:
     yaw_offset: 90
-    wing_marker_right: 1
-    wing_marker_left: 3
+    wing_markers: {left: 3, right: 1}
   flight_002:
     yaw_offset: 90
-    wing_marker_right: 1
-    wing_marker_left: 3
+    wing_markers: {left: 3, right: 1}

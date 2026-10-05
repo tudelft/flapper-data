@@ -5,7 +5,7 @@ from pathlib import Path
 
 import yaml
 
-_DATASETS_YAML = Path(__file__).parent / "datasets.yaml"
+_DATASETS_YAML = Path(__file__).resolve().parents[2] / "datasets.yaml"
 
 # Mapping from OptiTrack rigid body names to short prefixes used in code.
 # Add entries here if new rigid bodies appear in your recordings.
@@ -24,8 +24,8 @@ class Config:
     optitrack_path: str
     optitrack_cols: list
     yaw_offset: float  # degrees – corrects rigid-body frame to consistent forward
-    wing_marker_right: int  # marker index for right-wing tip in dihedral_new
-    wing_marker_left: int   # marker index for left-wing tip in dihedral_new
+    wing_marker_right: int  # right-wing marker used for the dihedral angle
+    wing_marker_left: int   # left-wing marker used for the dihedral angle
 
 
 def _parse_optitrack_columns(csv_path):
@@ -68,14 +68,16 @@ def _parse_optitrack_columns(csv_path):
 
 
 def _load_dataset_config(flight: str) -> dict:
-    """Load per-dataset overrides from datasets.yaml."""
-    if not _DATASETS_YAML.exists():
-        return {}
+    """Return the datasets.yaml defaults with the flight's overrides applied."""
     with open(_DATASETS_YAML) as f:
-        data = yaml.safe_load(f) or {}
-    defaults = data.get("defaults", {})
-    overrides = data.get("datasets", {}).get(flight, {})
-    return {**defaults, **overrides}
+        data = yaml.safe_load(f)
+    defaults = data["defaults"]
+    overrides = (data.get("flights") or {}).get(flight) or {}
+    return {
+        **defaults,
+        **overrides,
+        "wing_markers": {**defaults["wing_markers"], **overrides.get("wing_markers", {})},
+    }
 
 
 def load(flight: str) -> Config:
@@ -88,9 +90,9 @@ def load(flight: str) -> Config:
         onboard_path=f"data/raw/{flight}/onboard-{flight}.csv",
         optitrack_path=optitrack_path,
         optitrack_cols=_parse_optitrack_columns(optitrack_path),
-        yaw_offset=float(ds_cfg.get("yaw_offset", 0)),
-        wing_marker_right=int(ds_cfg.get("wing_marker_right", 2)),
-        wing_marker_left=int(ds_cfg.get("wing_marker_left", 3)),
+        yaw_offset=float(ds_cfg["yaw_offset"]),
+        wing_marker_right=int(ds_cfg["wing_markers"]["right"]),
+        wing_marker_left=int(ds_cfg["wing_markers"]["left"]),
     )
 
 

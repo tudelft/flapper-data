@@ -5,7 +5,7 @@ import rerun.blueprint as rrb
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 import argparse
-from data_loader import load
+from flapper_data.data_loader import load
 
 # Frame definition: x forward, y left, z up
 # OptiTrack z,x,y --> x,y,z, switch also for quaternions
