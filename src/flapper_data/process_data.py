@@ -5,7 +5,6 @@ from math import gcd
 from scipy import signal
 import matplotlib.pyplot as plt
 from scipy.integrate import cumulative_trapezoid
-from flapper_data.state_estimator import MahonyIMU
 import os
 import argparse
 from flapper_data import data_loader
@@ -419,74 +418,32 @@ def process_frequency_dihedral(data, optitrack_fps, wing_marker_right=2, wing_ma
 
 def process_onboard(data, sampling_freq):
     """
-    Processes onboard data by using a Mahony filter for estimating attude.
-    Orients accelerations and removes the gravity vector.
+    Orients the onboard IMU data to the aerospace body frame (x forward, y right, z down).
 
     Return:
-        - Processed dataframe with all angle values in radians, and correctly oriented in the aerospace reference frane NED
+        - Processed dataframe with rates in radians. The accelerations are still the raw
+          specific force in g, gravity is removed after syncing with the OptiTrack attitude.
     """
-    estimator = MahonyIMU()
-
-    attitude = {"pitch": [], "roll": [], "yaw": []}
-    
     # IMU uses x forward, y to the left, z up
     p = np.radians(data["gyro.x"])
     q = np.radians(-data["gyro.y"])
     r = np.radians(-data["gyro.z"])
-
-    # calculate correct attitude with Mahony filter
-    for i in range(len(data)):
-        gx_i, gy_i, gz_i = data.loc[i, ["gyro.x", "gyro.y", "gyro.z"]]
-
-        ax_i, ay_i, az_i = data.loc[i, ["acc.x", "acc.y", "acc.z"]]
-
-        qx, qy, qz, qw = estimator.sensfusion6Update(
-            gx_i, gy_i, gz_i, ax_i, ay_i, az_i, 1 / sampling_freq
-        )
-
-        yaw_i, pitch_i, roll_i = R.from_quat([qx, qy, qz, qw]).as_euler("ZYX")
-
-        attitude["roll"].append(roll_i)
-        attitude["pitch"].append(-pitch_i)
-        attitude["yaw"].append(-yaw_i)
 
     # rotational accelerations
     roll_acc = np.gradient(p, 1 / sampling_freq)
     pitch_acc = np.gradient(q, 1 / sampling_freq)
     yaw_acc = np.gradient(r, 1 / sampling_freq)
 
-
-    # translational accelerations ->> check how this behaves
-    acc_x = data["acc.x"]
-    acc_y = - data["acc.y"]
-    acc_z = - data["acc.z"]
-
-
-    acc_x = acc_x * g0 - np.sin(attitude["pitch"]) * g0 
-    acc_y = acc_y * g0 + np.sin(attitude["roll"]) * np.cos(attitude["pitch"]) * g0
-    acc_z = acc_z * g0 + np.cos(attitude["pitch"]) * np.cos(attitude["roll"]) * g0
-
-    # translational velocity
-    vel_x = cumulative_trapezoid(acc_x, dx=1 / sampling_freq, initial=0)
-    vel_y = cumulative_trapezoid(acc_y, dx=1 / sampling_freq, initial=0)
-    vel_z = cumulative_trapezoid(acc_z, dx=1 / sampling_freq, initial=0)
-
     processed_data = pd.DataFrame({
-            "roll": attitude["roll"],
-            "pitch": attitude["pitch"],
-            "yaw": attitude["yaw"],
             "p": p,
             "q": q,
             "r": r,
             "p_dot": roll_acc,
             "q_dot": pitch_acc,
             "r_dot": yaw_acc,
-            "vel.x": vel_x,
-            "vel.y": vel_y,
-            "vel.z": vel_z,
-            "acc.x": acc_x,
-            "acc.y": acc_y,
-            "acc.z": acc_z,
+            "acc.x": data["acc.x"],
+            "acc.y": -data["acc.y"],
+            "acc.z": -data["acc.z"],
         })
     
     # Drop useless columns
@@ -499,17 +456,20 @@ def process_onboard(data, sampling_freq):
 
 
 def find_lag(onboard, optitrack, columns_sync):
+    """Lag that maximises the cross-correlation summed over all columns_sync."""
 
-    # Extract single column as 1D array
-    x = onboard[columns_sync[0]].values
-    y = optitrack[columns_sync[0]].values
-    
-    # Normalize the signals (helps with correlation)
-    x = (x - np.mean(x)) / np.std(x)
-    y = (y - np.mean(y)) / np.std(y)
-    
-    correlation = signal.correlate(x, y, mode="full")
-    lags = signal.correlation_lags(x.size, y.size, mode="full")
+    correlation = 0
+    for col in columns_sync:
+        x = onboard[col].values
+        y = optitrack[col].values
+
+        # Normalize the signals (helps with correlation)
+        x = (x - np.mean(x)) / np.std(x)
+        y = (y - np.mean(y)) / np.std(y)
+
+        correlation = correlation + signal.correlate(x, y, mode="full")
+
+    lags = signal.correlation_lags(len(onboard), len(optitrack), mode="full")
     lag = lags[np.argmax(correlation)]
     
     # Debug: print correlation strength
@@ -550,6 +510,27 @@ def merge_dfs(onboard, optitrack, sampling_freq):
     # Recreate uniform time array
     num_samples = len(merged)
     merged["time"] = np.linspace(0, (num_samples - 1) / sampling_freq, num_samples)
+
+    return merged
+
+
+def remove_gravity(merged, sampling_freq, g0):
+    """
+    Converts the onboard specific force from g to m/s^2 and removes gravity using the
+    OptiTrack attitude, then integrates the result to get the onboard velocity.
+    """
+    roll = merged["optitrack.roll"]
+    pitch = merged["optitrack.pitch"]
+
+    merged["onboard.acc.x"] = merged["onboard.acc.x"] * g0 - np.sin(pitch) * g0
+    merged["onboard.acc.y"] = merged["onboard.acc.y"] * g0 + np.sin(roll) * np.cos(pitch) * g0
+    merged["onboard.acc.z"] = merged["onboard.acc.z"] * g0 + np.cos(pitch) * np.cos(roll) * g0
+
+    # translational velocity, placed before the accelerations
+    loc = merged.columns.get_loc("onboard.acc.x")
+    for i, axis in enumerate(("x", "y", "z")):
+        vel = cumulative_trapezoid(merged[f"onboard.acc.{axis}"], dx=1 / sampling_freq, initial=0)
+        merged.insert(loc + i, f"onboard.vel.{axis}", vel)
 
     return merged
 
@@ -693,7 +674,7 @@ if __name__ == "__main__":
     g0 = 9.80665  # m/s
 
     # Columns to use to sync the optitrack and IMU data
-    columns_sync = ["pitch", "roll", "yaw"]
+    columns_sync = ["p", "q", "r"]
     show = False
 
     body_to_CoM = np.array([+0.001, 0.0, -0.13])
@@ -714,6 +695,8 @@ if __name__ == "__main__":
     onboard_processed = onboard_pipeline(onboard_data, onboard_freq, filter_cutoff_freq, optitrack_fps)
 
     processed_merged = sync_dataframes(onboard_processed, optitrack_processed, optitrack_fps, columns_sync)
+
+    processed_merged = remove_gravity(processed_merged, optitrack_fps, g0)
 
 
     # Save merged DataFrame
