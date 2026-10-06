@@ -1,13 +1,14 @@
 # flapper-data
-Collection of scripts to process data captured with a Flapper Drone: the onboard log and the OptiTrack recording of the same flight are synced and merged into one CSV.
+Collection of scripts to process data captured with a Flapper Drone: the onboard log and the OptiTrack recording of the same flight are synced and merged into one CSV at 200 Hz.
 
 ## Setup and usage
 
 ```bash
 uv sync                               # create the environment
-./run.sh process hover1               # process one flight
-./run.sh process-all                  # process every flight listed in run.sh
-./run.sh rerun hover1                 # replay a flight in the Rerun viewer
+./run.sh process lateral1_rl          # process one flight
+./run.sh process-all                  # process every flight in flights.yaml
+./run.sh rerun lateral1_rl            # replay the mocap of a flight in the Rerun viewer
+./run.sh rerun lateral1_rl --processed  # replay the processed flight instead
 ```
 
 Run everything from the repository root: the data paths are relative to the current directory.
@@ -16,32 +17,42 @@ Run everything from the repository root: the data paths are relative to the curr
 
 ```
 data/                                 # not tracked by git
-├── raw/
-│   └── <flight>/                     # e.g. hover1, climb2, flight_001
-│       ├── onboard-<flight>.csv      # onboard log
-│       └── optitrack-<flight>.csv    # OptiTrack (Motive) export
+├── onboard/
+│   └── <log>.csv                     # e.g. rllog07.csv, decoded uSD-card log
+├── mocap/
+│   └── <take>.csv                    # e.g. lateral1_rl.csv, OptiTrack (Motive) export
 └── processed/
-    └── <flight>-processed.csv        # written by process_data
+    └── <flight>.csv                  # written by process_data
 ```
 
-- **onboard-\<flight\>.csv**: Crazyflie log at 200 Hz. The first column is the timestamp, and it must contain `acc.x/y/z` (g) and `gyro.x/y/z` (deg/s). All other columns (e.g. `controller.*`, `motor.*`) are carried through to the output.
-- **optitrack-\<flight\>.csv**: Motive CSV export (tested with format version 1.23) with the rigid bodies `FlapperBody`, `FlapperLeftWing` and `FlapperRightWing`. The columns are detected from the header; unlabeled markers are ignored.
+- **onboard/\<log\>.csv**: Crazyflie log at a nominal 200 Hz. It must contain `timestamp` (ms), `gyro.x/y/z` (deg/s), `locSrv.x/y/z` (the position streamed to the drone) and `controller.cmd_thrust`. All columns are carried through to the output unchanged.
+- **mocap/\<take\>.csv**: Motive CSV export at 360 Hz (tested with format version 1.23, Y up). Only the pose of the drone's rigid body (`flapper_rl` by default) is used.
 
 ## Files
 
 | File | What it does |
 |---|---|
-| `src/flapper_data/process_data.py` | Main pipeline. Low-passes and rotates the OptiTrack data to the body frame (attitude, rates, CoM velocity and acceleration) and computes the wing dihedral angles and flapping frequency. Low-passes the onboard IMU data, rotates it to the body frame and resamples it to the OptiTrack frame rate. Syncs the two by cross-correlating the body rates p, q, r, merges them, and removes gravity from the onboard accelerations using the OptiTrack attitude. Constants such as the onboard rate, filter cutoff and CoM offset are set at the bottom of the file. |
-| `src/flapper_data/rerun_visuals.py` | Replays a flight in the [Rerun](https://rerun.io) viewer: body and wing markers, body axes, dihedral angle, flapping frequency and position. Uses the raw OptiTrack file, or the processed CSV with `--processed`. |
-| `src/flapper_data/data_loader.py` | Builds the configuration for a flight: file paths, OptiTrack column names, and the settings from `datasets.yaml`. |
-| `datasets.yaml` | Per-flight settings: `yaw_offset` to align the rigid-body x-axis with the nose, and `wing_markers` used for the dihedral angle. Flights that are not listed use the defaults. |
-| `run.sh` | Shortcut for running the modules above on one or all flights. |
+| `flights.yaml` | Pairs each onboard log with the mocap take of the same flight, plus the processing settings (rigid body name, mocap low-pass). |
+| `src/flapper_data/process_data.py` | Main pipeline, described below. |
+| `src/flapper_data/rerun_visuals.py` | Replays a flight in the [Rerun](https://rerun.io) viewer. From the raw mocap: body markers, body axes and position, plus the wing markers, dihedral angle and flapping frequency when the wing rigid bodies were recorded (`FlapperLeftWing`/`FlapperRightWing`, older recordings only). With `--processed`: body pose and trajectory, onboard gyro vs OptiTrack body rates, attitude, position and velocity. |
+| `src/flapper_data/data_loader.py` | Reads `flights.yaml`, and the rigid-body pose and markers from the Motive export. Run it to list the flights. |
+| `run.sh` | Shortcut for running the modules above. |
+
+## Processing
+
+1. **OptiTrack, at 360 Hz.** The rigid-body pose is rotated from the Motive frame to NED (body axes FRD). Frames where the rigid body is not tracked or is mis-solved (e.g. orientation flipped for a single frame) are dropped and interpolated. Position and quaternion are low-passed (zero phase, `mocap_cutoff_hz`, 30 Hz by default, above the ~16 Hz flapping frequency), then differentiated: the velocity by central differences, the body rates from the relative rotation between neighbouring frames.
+2. **Sync.** The onboard timestamps are not accurate: the onboard clock runs ~1.1% slow compared to OptiTrack. The pipeline fits `mocap time = scale * onboard time + offset`: a coarse offset from cross-correlating `locSrv` with the OptiTrack position, then scale and offset maximising the cross-correlation of the gyro with the OptiTrack body rates. It prints the result and the gyro/OptiTrack correlation while flying (low-passed at 5 Hz), which should be close to 1. If the sync fails, `clock_scale` and `time_offset` can be set per flight in `flights.yaml`.
+3. **Merge, at 200 Hz.** The output covers the time both systems were recording, on a uniform 200 Hz grid. Each row takes the nearest onboard sample, unchanged (the log runs at ~199.8 Hz, so a sample is repeated every few seconds), and the OptiTrack states interpolated at that time.
 
 ## Output
 
-Each row of `<flight>-processed.csv` is one OptiTrack frame. Columns start with `onboard.` or `optitrack.`:
+Each row of `<flight>.csv` is one 200 Hz sample; `time` starts at 0 s. The other columns start with `onboard.` or `optitrack.`:
 
-- Attitude, rates and their derivatives are in rad, rad/s and rad/s², velocities and accelerations in m/s and m/s², in the body frame (x forward, y right, z down).
-- `onboard.controller.*` and the other passed-through log columns keep the units of the onboard log.
-- `optitrack.fb*`, `optitrack.fblw*` and `optitrack.fbrw*` are the (low-passed) marker positions and quaternions of the body, left wing and right wing, in the OptiTrack frame.
-- `optitrack.dihedral.*` are in rad, `optitrack.freq.*` in Hz.
+- `onboard.*`: the columns of the onboard log, unfiltered and in their original units and frames.
+- `optitrack.ned.x/y/z` [m]: position of the rigid body in NED (origin at the OptiTrack origin).
+- `optitrack.ned.qw/qx/qy/qz`, `optitrack.ned.roll/pitch/yaw` [rad]: attitude of the FRD body frame relative to NED, as a quaternion and as ZYX Euler angles.
+- `optitrack.ned.velx/vely/velz` [m/s]: velocity in NED.
+- `optitrack.frd.velx/vely/velz` [m/s]: velocity in the body frame.
+- `optitrack.frd.p/q/r` [rad/s]: body rates.
+
+Rows that fall in a mocap dropout longer than 0.05 s have NaN OptiTrack columns.

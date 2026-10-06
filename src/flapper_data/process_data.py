@@ -1,754 +1,277 @@
-import pandas as pd
-import numpy as np
-from scipy.spatial.transform import Rotation as R
-from math import gcd
-from scipy import signal
-import matplotlib.pyplot as plt
-from scipy.integrate import cumulative_trapezoid
-import os
 import argparse
+import os
+
+import numpy as np
+import pandas as pd
+from scipy import signal
+from scipy.interpolate import CubicSpline
+from scipy.spatial.transform import Rotation as R
+
 from flapper_data import data_loader
 
-WINDOW_SIZE = 16
-TARGET_FFT_SIZE = 256
-FREQ_RANGE = (5, 25)
+OUTPUT_RATE = 200  # Hz
+ONBOARD_RATE = 200  # Hz, nominal rate of the onboard log
+MAX_GAP = 0.05  # s, mocap dropouts longer than this are NaN in the output
+CHECK_CUTOFF = 5  # Hz, low-pass of the gyro and mocap rates compared to check the sync
 
-FREE_FLIGHT = False
+# Frames that moved more than this from the last good frame are rigid-body mis-solves,
+# e.g. an orientation flipped for a single frame, and are dropped
+JUMP_ANGLE = np.radians(20)  # rad, plus MAX_ANGULAR_RATE * time since the last good frame
+MAX_ANGULAR_RATE = np.radians(3000)  # rad/s
+JUMP_DISTANCE = 0.02  # m, plus MAX_SPEED * time since the last good frame
+MAX_SPEED = 10  # m/s
 
-def get_optitrack_meta(optitrack_csv):
-    print("Obtaining the optitrack metadata ...")
+# Search ranges of the sync, around the initial guess
+SCALE_RANGE = 0.005  # relative
+OFFSET_RANGE = 0.5  # s
 
-    with open(optitrack_csv, "r") as f:
-        lines = f.readline()
+# Maps the Motive frame (Z forward, X left, Y up) to NED. The rigid body axes follow
+# the same convention, so the same matrix maps them to the FRD body frame.
+MOTIVE_TO_NED = np.array([[0, 0, 1], [-1, 0, 0], [0, -1, 0]])
 
-    metadata_raw = lines.strip().split(",")
-    metadata = dict(zip(metadata_raw[::2], metadata_raw[1::2]))
-
-    if metadata["Format Version"] != "1.23":
-        print("The code has not been tested with this Optitrack file version")
-
-    fps = float(metadata["Capture Frame Rate"])
-    print(f"Found .csv ... optitrack data recorded at {fps} fps")
-
-    return metadata
-
-
-def calculate_dihedral_angle(forward_body, norm_dihedral):
-    """Calculate dihedral angle with proper sign based on wing side"""
-
-    print(forward_body.shape, norm_dihedral.shape)
-    cross_products = np.cross(forward_body, norm_dihedral)
-    
-    # Norms
-    norms_cross = np.linalg.norm(cross_products, axis=1)
-    norms_forward = np.linalg.norm(forward_body, axis=1)
-    norms_dihedral = np.linalg.norm(norm_dihedral, axis=1)
-    
-    # Unsigned angles
-    angles = np.arcsin(norms_cross / (norms_forward * norms_dihedral))
-    
-    # signs = np.where(cross_products[:, 0] >= 0, 1, -1)
-    return angles # * signs
+POS = ["ned.x", "ned.y", "ned.z"]
+QUAT = ["ned.qw", "ned.qx", "ned.qy", "ned.qz"]
+EULER = ["ned.roll", "ned.pitch", "ned.yaw"]
+VEL_NED = ["ned.velx", "ned.vely", "ned.velz"]
+VEL_FRD = ["frd.velx", "frd.vely", "frd.velz"]
+RATES = ["frd.p", "frd.q", "frd.r"]
 
 
-def align_to_original_length(dominant_freqs, N, window_size):
-    aligned = np.full(N, 0)  # same length as original
-    offset = window_size // 2
-    aligned[offset : offset + len(dominant_freqs)] = dominant_freqs
-    return aligned
+def _long_gaps(tracked, max_frames):
+    """Mask of the untracked frames that belong to a dropout longer than max_frames."""
+    edges = np.diff(np.r_[0, (~tracked).astype(int), 0])
+    mask = np.zeros(len(tracked), dtype=bool)
+    for start, end in zip(np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)):
+        if end - start > max_frames:
+            mask[start:end] = True
+    return mask
 
 
-def calculate_frequency(
-    norm_dihedral,
-    wing_vector,
-    sample_rate,
-    window_size=16,
-    fft_size=256,
-    freq_range=(5, 25),
-):
-    dot = np.einsum("ij,ij->i", wing_vector, norm_dihedral)
-
-    wing_norms = np.linalg.norm(wing_vector, axis=1)
-
-    dihedral_norms = np.linalg.norm(norm_dihedral, axis=1)
-
-    flapping_angle = np.arcsin(dot / (wing_norms * dihedral_norms))
-
-    flapping_windows = np.lib.stride_tricks.sliding_window_view(
-        flapping_angle, window_size
-    )
-    windows = flapping_windows - flapping_windows.mean(axis=1, keepdims=True)
-
-    # Zero-pad each window to fft_size
-    padded_signal = np.zeros((windows.shape[0], fft_size))
-    padded_signal[:, :window_size] = windows
-
-    # FFT for all windows at once
-    freqs = np.fft.fftfreq(fft_size, 1 / sample_rate)
-    fft_vals = np.abs(np.fft.fft(padded_signal, axis=1))
-
-    # Restrict to target frequency range
-    mask = (freqs >= freq_range[0]) & (freqs <= freq_range[1])
-    valid_freqs = freqs[mask]
-    valid_fft = fft_vals[:, mask]
-
-    # Pick dominant frequency per window
-    dominant_idx = np.argmax(valid_fft, axis=1)
-    dominant_freqs = valid_freqs[dominant_idx]
-
-    aligned_dominant = align_to_original_length(
-        dominant_freqs, len(norm_dihedral), window_size
-    )
-
-    return aligned_dominant
+def _mis_solves(t, pos, quat, tracked):
+    """Mask of the frames that jumped further from the last good frame than the drone can move."""
+    bad = np.zeros(len(t), dtype=bool)
+    valid = np.flatnonzero(tracked)
+    last = valid[0]
+    for k in valid[1:]:
+        dt = t[k] - t[last]
+        angle = 2 * np.arccos(min(1.0, abs(quat[k] @ quat[last])))
+        distance = np.linalg.norm(pos[k] - pos[last])
+        if angle > JUMP_ANGLE + MAX_ANGULAR_RATE * dt or distance > JUMP_DISTANCE + MAX_SPEED * dt:
+            bad[k] = True
+        else:
+            last = k
+    return bad
 
 
-def handle_nan(data, frame_rate, time_limit):
+def mocap_states(mocap, fps, cutoff):
     """
-    Handles the NaN or missing values in the OptiTrack .csv file using
-    cubic interpolation across each recorded variable.
+    Pose, velocity and body rates of the drone at the mocap frame rate.
 
-    Parameters:
-    -----------
-        data: pandas.DataFrame
-            DataFrame containing the raw OptiTrack data
-        frame_rate: int
-            Frame rate at which the OptiTrack captured data
-        time_limit: int
-            Limit in seconds of maximum allowed gap between missing logs
+    The position and quaternion are low-passed (zero phase) and then differentiated:
+    the velocity by central differences, the body rates from the relative rotation
+    between the neighbouring frames.
 
-    Returns:
-    --------
-        interpolated_data: pandas.DataFrame
-            Data with interpolated values and removed NaNs
+    Untracked and mis-solved frames are dropouts: they are interpolated before filtering,
+    and the 'gap' column marks the ones in dropouts longer than MAX_GAP.
+
+    Returns a DataFrame with the time, the POS, QUAT, VEL_NED, VEL_FRD and RATES columns,
+    and the 'gap' column.
     """
+    t = mocap["time"].to_numpy()
+    tracked = mocap.notna().all(axis=1).to_numpy()
 
-    frame_limit = int(frame_rate / time_limit)
+    pos = mocap[["x", "y", "z"]].to_numpy() @ MOTIVE_TO_NED.T
+    # The vector part of a quaternion rotates like a vector
+    quat = np.column_stack([mocap["qw"], mocap[["qx", "qy", "qz"]].to_numpy() @ MOTIVE_TO_NED.T])
 
-    interpolated_data = data.interpolate(method="cubic", axis=0, limit=frame_limit)
+    mis_solved = _mis_solves(t, pos, quat, tracked)
+    gap = _long_gaps(tracked & ~mis_solved, int(MAX_GAP * fps))
+    print(f"Mocap dropouts: {(~tracked).sum()} untracked and {mis_solved.sum()} mis-solved frames, "
+          f"{gap.sum()} of them in dropouts longer than {MAX_GAP} s")
+    tracked = tracked & ~mis_solved
+    pos[~tracked] = np.nan
+    quat[~tracked] = np.nan
 
-    return interpolated_data
+    # q and -q are the same rotation: pick the sign that keeps the quaternion continuous
+    valid = np.flatnonzero(tracked)
+    dots = np.einsum("ij,ij->i", quat[valid[1:]], quat[valid[:-1]])
+    quat[valid] *= np.cumprod(np.r_[1, np.where(dots < 0, -1, 1)])[:, np.newaxis]
+
+    # Fill the dropouts, then low-pass
+    pos = pd.DataFrame(pos).interpolate(limit_direction="both").to_numpy()
+    quat = pd.DataFrame(quat).interpolate(limit_direction="both").to_numpy()
+
+    b, a = signal.butter(4, cutoff, fs=fps)
+    pos = signal.filtfilt(b, a, pos, axis=0)
+    quat = signal.filtfilt(b, a, quat, axis=0)
+    quat /= np.linalg.norm(quat, axis=1, keepdims=True)
+
+    rot = R.from_quat(quat, scalar_first=True)  # FRD -> NED
+
+    vel_ned = np.gradient(pos, t, axis=0)
+    vel_frd = rot.inv().apply(vel_ned)
+
+    # Central differences, one-sided at the ends
+    n = len(t)
+    before = np.r_[0, np.arange(n - 2), n - 2]
+    after = np.r_[1, np.arange(2, n), n - 1]
+    rates = (rot[before].inv() * rot[after]).as_rotvec() / (t[after] - t[before])[:, np.newaxis]
+
+    states = pd.DataFrame(np.column_stack([pos, quat, vel_ned, vel_frd, rates]), columns=POS + QUAT + VEL_NED + VEL_FRD + RATES)
+    states.insert(0, "time", t)
+    states["gap"] = gap
+    return states
 
 
-def resample_data(data, up, down, fs_original):
-    columns_name = data.columns[1:]
-    g = gcd(up, down)
-    up //= g
-    down //= g
-
-    original_N = len(data)
-    duration = (original_N - 1) / fs_original
-
-    data_resampled = signal.resample_poly(data.iloc[:, 1:], up, down)
-    data_resampled = pd.DataFrame(data_resampled, columns=columns_name)
-
-    time_array = np.linspace(0, duration, len(data_resampled))
-    data_resampled.insert(0, "time", time_array)
-
-    return data_resampled
-
-
-def filter_data(data, cutoff_freq, sampling_freq):
+def _xcorr(t_ref, ref, t_sig, sig, offset_range=None):
     """
-    filter --> scipy.signal.butter
-    use scipy.integrate.simpson or trapezoidal
+    Offset that best aligns sig with ref, so that ref(t + offset) ~ sig(t), and the
+    correlation at that offset (summed over the columns).
+    Both signals are resampled to a uniform grid at OUTPUT_RATE.
     """
+    dt = 1 / OUTPUT_RATE
 
-    columns_name = data.columns
+    def uniform(t, x):
+        grid = np.arange(t[0], t[-1], dt)
+        x = np.column_stack([np.interp(grid, t, col) for col in x.T])
+        return (x - x.mean(axis=0)) / x.std(axis=0)
 
-    b, a = signal.butter(5, cutoff_freq, fs=sampling_freq)
+    ref, sig = uniform(t_ref, ref), uniform(t_sig, sig)
+    corr = sum(signal.correlate(ref[:, i], sig[:, i], method="fft") for i in range(ref.shape[1]))
+    offsets = signal.correlation_lags(len(ref), len(sig)) * dt + t_ref[0] - t_sig[0]
 
-    filtered_data = signal.filtfilt(b, a, data.iloc[:, 1:], axis=0)
+    search = np.arange(1, len(corr) - 1)
+    if offset_range is not None:
+        search = search[(offsets[search] >= offset_range[0]) & (offsets[search] <= offset_range[1])]
+    k = search[np.argmax(corr[search])]
 
-    filtered_df = pd.DataFrame(filtered_data, columns=columns_name[1:])
-
-    time_array = np.linspace(0, filtered_df.shape[0] / sampling_freq, filtered_df.shape[0])
-
-    filtered_df.insert(0, "time", time_array)
-
-    return filtered_df
+    # Parabolic interpolation of the peak, for sub-sample resolution
+    c0, c1, c2 = corr[k - 1 : k + 2]
+    shift = 0.5 * (c0 - c2) / (c0 - 2 * c1 + c2)
+    return offsets[k] + shift * dt, c1
 
 
-def process_optitrack(data, com_body, optitrack_fps):
+def sync(onboard, states, cutoff):
     """
-    Orients the optitrack data to the correct body orientation. Optitrack defines body axes
-    as RightForwardUp respectively for x, y, z. Thus use a Euler intrinsic rotation, 'yxz',
-    corresponding to roll, pitch, and yaw.
+    Fits the onboard clock to the mocap clock: mocap time = scale * onboard time + offset,
+    with the onboard time starting at 0 at the first onboard sample.
 
-    Parameters:
-    -----------
-        data : pandas.DataFrame
-            DataFrame containing the raw OptiTrack data
-        reference_frame : str
-            Defines the orientation the data is processed to.
-            Can be either "ForwardLeftUp" or "ForwardRightDown" as from aerospace convention,
-            indicating respectively x, y, z.
-        com_body: numpy.array # (3,)
-            Position of the center of mass with respect to the optitrack defined geometric center in the body frame.
-
-    Returns:
-    --------
-        oriented_data: pandas.DataFrame
+    The coarse offset comes from the position streamed to the drone (locSrv) and the
+    mocap position. Scale and offset are then found by maximising the cross-correlation
+    of the gyro and the mocap body rates, low-passed alike.
     """
+    t_onboard = (onboard["timestamp"].to_numpy() - onboard["timestamp"].iloc[0]) / 1000
+    t_mocap = states["time"].to_numpy()
 
-    # Rotational kinematics
-    quats = np.vstack((data["fbqz"], data["fbqx"], data["fbqy"], data["fbqw"])).T
+    # Initial guess: the log runs at its nominal rate
+    scale0 = 1 / (ONBOARD_RATE * np.mean(np.diff(t_onboard)))
 
-    # Compute the norm (length) of each quaternion (row-wise)
-    norms = np.linalg.norm(quats, axis=1, keepdims=True)
+    # locSrv is in x forward, y left, z up
+    loc = onboard[["locSrv.x", "locSrv.y", "locSrv.z"]].to_numpy() * [1, -1, -1]
+    offset0, _ = _xcorr(t_mocap, states[POS].to_numpy(), scale0 * t_onboard, loc)
 
-    # Normalize each quaternion
-    quats = quats / norms
+    # The gyro is in x forward, y left, z up, in deg/s
+    gyro = np.radians(onboard[["gyro.x", "gyro.y", "gyro.z"]].to_numpy()) * [1, -1, -1]
+    gyro = signal.filtfilt(*signal.butter(4, cutoff, fs=ONBOARD_RATE), gyro, axis=0)
+    rates = states[RATES].to_numpy()
+    offset_range = (offset0 - OFFSET_RANGE, offset0 + OFFSET_RANGE)
 
-    r = R.from_quat(quats, scalar_first=False)
+    def best(scales):
+        fits = [(*_xcorr(t_mocap, rates, s * t_onboard, gyro, offset_range), s) for s in scales]
+        offset, _, scale = max(fits, key=lambda fit: fit[1])
+        return scale, offset
 
-    # Optitrack defines Z-up, Y-left, X-forward
-    euler_angles = r.as_euler("ZYX", degrees=False)
-
-    # First extract yaw, pitch and then roll
-    psi, theta, phi = -euler_angles[:, 0], -euler_angles[:, 1], euler_angles[:, 2] # all checked correct orientation
-
-    oriented_euler = np.asarray([phi, theta, psi])
-
-    euler_rates = np.gradient(oriented_euler, data["time"], axis=1)  # (3, N)
-
-    rotations_rates = np.array(
-        [
-            [np.ones_like(theta), np.zeros_like(theta), -np.sin(theta)],
-            [np.zeros_like(theta), np.cos(phi), np.sin(phi) * np.cos(theta)],
-            [np.zeros_like(theta), -np.sin(phi), np.cos(phi) * np.cos(theta)],
-        ]
-    )  # (3, 3, N)
-
-    # Body rates found from the rotation matrix above
-    roll_rate, pitch_rate, yaw_rate = np.einsum(
-        "ijk,jk->ik", rotations_rates, euler_rates
-    )  # (N,), (N,), (N,)
-
-    
-    rates_body_wrt_ref = np.asarray([roll_rate, pitch_rate, yaw_rate])  # (3, N)
-
-    alpha_body_wrt_ref = np.gradient(rates_body_wrt_ref, data["time"], axis=1)  # (3, N)
+    scale, _ = best(scale0 * (1 + np.arange(-SCALE_RANGE, SCALE_RANGE + 1e-9, 1e-4)))
+    scale, offset = best(scale * (1 + np.arange(-1e-4, 1e-4 + 1e-9, 1e-5)))
+    return scale, offset
 
 
-    # Now move onto translational kinematics, Optitrack defines Z-up, Y-left, X-forward
-    body_pos_ref = np.asarray([data["fbz"], -data["fbx"], -data["fby"]])  # (3, N)
-
-    vel_ref = np.gradient(body_pos_ref, data["time"], axis=1)  # (3, N)
-
-    acc_ref = np.gradient(vel_ref, data["time"], axis=1)  # (3, N)
-
-    # Position of the CoM in body frame
-    pos_com_ref = body_pos_ref + com_body[:, np.newaxis]  # reshape com_body to (3, N)
-
-    vel_com_ref = vel_ref + np.cross(rates_body_wrt_ref, com_body, axis=0)
-
-    acc_com_ref = (
-        acc_ref
-        + np.cross(alpha_body_wrt_ref, com_body, axis=0)
-        + np.cross(
-            rates_body_wrt_ref, np.cross(rates_body_wrt_ref, com_body, axis=0), axis=0
-        )
-    )
-
-    # Rotations matrix from global frame to body
-    rotations_RefToBody = np.array(
-        [
-            [
-                np.cos(theta) * np.cos(psi),
-                np.cos(theta) * np.sin(psi),
-                -np.sin(theta),
-            ],
-            [
-                (
-                    -np.cos(phi) * np.sin(psi)
-                    + np.sin(phi) * np.sin(theta) * np.cos(psi)
-                ),
-                (np.cos(phi) * np.cos(psi) + np.sin(phi) * np.sin(theta) * np.sin(psi)),
-                np.sin(phi) * np.cos(theta),
-            ],
-            [
-                (np.sin(phi) * np.sin(psi) + np.cos(phi) * np.sin(theta) * np.cos(psi)),
-                (
-                    -np.sin(phi) * np.cos(psi)
-                    + np.cos(phi) * np.sin(theta) * np.sin(psi)
-                ),
-                np.cos(phi) * np.cos(theta),
-            ],
-        ]
-    )
-
-    velx_com_body, vely_com_body, velz_com_body = np.einsum("ijk,jk->ik", rotations_RefToBody, vel_com_ref)
-
-    accx_com_body, accy_com_body, accz_com_body = np.einsum("ijk,jk->ik", rotations_RefToBody, acc_com_ref)
-
-    
-    processed_data = pd.DataFrame(
-        {
-            "time": data["time"],
-            "roll": phi,
-            "pitch": theta,
-            "yaw": psi,
-            "p": roll_rate,
-            "q": pitch_rate,
-            "r": yaw_rate,
-            "p_dot": alpha_body_wrt_ref[0, :],
-            "q_dot": alpha_body_wrt_ref[1, :],
-            "r_dot": alpha_body_wrt_ref[2, :],
-            "vel.x": velx_com_body,
-            "vel.y": vely_com_body,
-            "vel.z": velz_com_body,
-            "acc.x": accx_com_body,
-            "acc.y": accy_com_body,
-            "acc.z": accz_com_body,
-
-        }
-    )
-
-    # Include all the markers position in the processed dataframe
-    processed_data = pd.concat([processed_data, data.iloc[:, 1:]], axis=1)
-
-    return processed_data   
-
-def process_frequency_dihedral(data, optitrack_fps, wing_marker_right=2, wing_marker_left=3, yaw_offset=0.0):
-    # Positions (N, 3) — OptiTrack ZXY → XYZ
-    top_marker = np.array([data["fb1z"], data["fb1x"], data["fb1y"]]).T
-    body_pos = np.array([data["fbz"], data["fbx"], data["fby"]]).T
-
-    # Rotational kinematics with yaw correction
-    quats = np.vstack((data["fbqz"], data["fbqx"], data["fbqy"], data["fbqw"])).T
-    yaw_correction = R.from_euler("z", yaw_offset, degrees=True)
-    r = R.from_quat(quats, scalar_first=False) * yaw_correction
-
-    forward_body = r.apply([1, 0, 0])  # (N, 3)
-    lateral_body = r.apply([0, 1, 0])
-    up_body = r.apply([0, 0, 1])
-
-    # Dihedral offset window: skip 2s, average 1s
-    start_frame = min(int(2.0 * optitrack_fps), len(data))
-    end_frame = min(start_frame + int(1.0 * optitrack_fps), len(data))
-
-    wing_markers = {"l": wing_marker_left, "r": wing_marker_right}
-    dihedral = {}
-
-    for wing in ("l", "r"):
-        mk = wing_markers[wing]
-        wing_root = np.array([
-            data[f"fb{wing}w{mk}z"],
-            data[f"fb{wing}w{mk}x"],
-            data[f"fb{wing}w{mk}y"],
-        ]).T  # (N, 3)
-
-        top_to_root = wing_root - top_marker
-
-        # Per-wing forward-component offset
-        ttr_body = r[start_frame:end_frame].inv().apply(
-            top_to_root[start_frame:end_frame]
-        )
-        fwd_offset = np.mean(ttr_body[:, 0])
-
-        top_to_root = top_to_root - fwd_offset * forward_body
-
-        lateral_oriented = lateral_body if wing == "l" else -lateral_body
-
-        # Project onto body XY plane (remove up component)
-        up_dot = np.einsum("ij,ij->i", top_to_root, up_body)
-        projected = top_to_root - up_dot[:, np.newaxis] * up_body
-
-        norm_proj = np.linalg.norm(projected, axis=1)
-        norm_lat = np.linalg.norm(lateral_oriented, axis=1)
-        denom = norm_proj * norm_lat
-
-        cos_angle = np.einsum("ij,ij->i", lateral_oriented, projected) / denom
-        handedness = 1.0 if wing == "l" else -1.0
-        sin_angle = handedness * np.einsum(
-            "ij,ij->i", np.cross(lateral_oriented, projected), up_body
-        ) / denom
-
-        angle = np.arctan2(sin_angle, cos_angle)
-        angle[(norm_proj < 1e-9) | (norm_lat < 1e-9)] = 0.0
-        dihedral[wing] = angle
-
-    # Frequency computation (cross-product approach, unchanged)
-    wing_rootR = np.array([
-        data[f"fbrw{wing_marker_right}z"],
-        data[f"fbrw{wing_marker_right}x"],
-        data[f"fbrw{wing_marker_right}y"],
-    ])
-    wing_rootL = np.array([
-        data[f"fblw{wing_marker_left}z"],
-        data[f"fblw{wing_marker_left}x"],
-        data[f"fblw{wing_marker_left}y"],
-    ])
-    wing_lastR = np.array([data["fbrw3z"], data["fbrw3x"], data["fbrw3y"]])
-    wing_lastL = np.array([data["fblw1z"], data["fblw1x"], data["fblw1y"]])
-
-    AB = top_marker.T - body_pos.T  # (3, N)
-    norm_dihedral_right = np.cross(AB.T, (wing_rootR - top_marker.T).T)
-    norm_dihedral_left = np.cross(AB.T, (wing_rootL - top_marker.T).T)
-
-    freq_right = calculate_frequency(
-        norm_dihedral_right,
-        (wing_lastR - wing_rootR).T,
-        optitrack_fps,
-        WINDOW_SIZE,
-        TARGET_FFT_SIZE,
-        FREQ_RANGE,
-    )
-
-    freq_left = calculate_frequency(
-        norm_dihedral_left,
-        (wing_lastL - wing_rootL).T,
-        optitrack_fps,
-        WINDOW_SIZE,
-        TARGET_FFT_SIZE,
-        FREQ_RANGE,
-    )
-
-    output = pd.DataFrame({
-        "time": data["time"],
-        "freq.right": freq_right,
-        "freq.left": freq_left,
-        "dihedral.right": dihedral["r"],
-        "dihedral.left": dihedral["l"],
-    })
-
-    return output
-
-
-def process_onboard(data, sampling_freq):
+def sync_quality(onboard, states, scale, offset):
     """
-    Orients the onboard IMU data to the aerospace body frame (x forward, y right, z down).
-
-    Return:
-        - Processed dataframe with rates in radians. The accelerations are still the raw
-          specific force in g, gravity is removed after syncing with the OptiTrack attitude.
+    Correlation of the gyro and the mocap body rates while flying (thrust > 0), per axis,
+    both low-passed at CHECK_CUTOFF.
     """
-    # IMU uses x forward, y to the left, z up
-    p = np.radians(data["gyro.x"])
-    q = np.radians(-data["gyro.y"])
-    r = np.radians(-data["gyro.z"])
+    t_onboard = (onboard["timestamp"].to_numpy() - onboard["timestamp"].iloc[0]) / 1000
+    t = scale * t_onboard + offset
+    t_mocap = states["time"].to_numpy()
+    flying = (onboard["controller.cmd_thrust"].to_numpy() > 0) & (t > t_mocap[0]) & (t < t_mocap[-1])
 
-    # rotational accelerations
-    roll_acc = np.gradient(p, 1 / sampling_freq)
-    pitch_acc = np.gradient(q, 1 / sampling_freq)
-    yaw_acc = np.gradient(r, 1 / sampling_freq)
-
-    processed_data = pd.DataFrame({
-            "p": p,
-            "q": q,
-            "r": r,
-            "p_dot": roll_acc,
-            "q_dot": pitch_acc,
-            "r_dot": yaw_acc,
-            "acc.x": data["acc.x"],
-            "acc.y": -data["acc.y"],
-            "acc.z": -data["acc.z"],
-        })
-    
-    # Drop useless columns
-    data = data.drop(["gyro.x", "gyro.y", "gyro.z", "acc.x", "acc.y", "acc.z"], axis=1)
-
-    # Concatenate the processed data
-    output = pd.concat([data, processed_data], axis=1)
-    
-    return output
+    gyro = np.radians(onboard[["gyro.x", "gyro.y", "gyro.z"]].to_numpy()) * [1, -1, -1]
+    gyro = signal.filtfilt(*signal.butter(4, CHECK_CUTOFF, fs=ONBOARD_RATE), gyro, axis=0)
+    fps = 1 / np.mean(np.diff(t_mocap))
+    rates = signal.filtfilt(*signal.butter(4, CHECK_CUTOFF, fs=fps), states[RATES].to_numpy(), axis=0)
+    return [np.corrcoef(gyro[flying, i], np.interp(t[flying], t_mocap, rates[:, i]))[0, 1] for i in range(3)]
 
 
-def find_lag(onboard, optitrack, columns_sync):
-    """Lag that maximises the cross-correlation summed over all columns_sync."""
-
-    correlation = 0
-    for col in columns_sync:
-        x = onboard[col].values
-        y = optitrack[col].values
-
-        # Normalize the signals (helps with correlation)
-        x = (x - np.mean(x)) / np.std(x)
-        y = (y - np.mean(y)) / np.std(y)
-
-        correlation = correlation + signal.correlate(x, y, mode="full")
-
-    lags = signal.correlation_lags(len(onboard), len(optitrack), mode="full")
-    lag = lags[np.argmax(correlation)]
-    
-    # Debug: print correlation strength
-    max_corr = np.max(correlation)
-    print(f"Lag: {lag} samples, Max correlation: {max_corr:.4f}")
-    
-    return lag
-
-
-def shift_data(data, lag, sampling_freq):
-    time_shift = lag / sampling_freq
-
-    data["time"] = np.linspace(time_shift, data["time"].iloc[-1] + time_shift, len(data["time"]))
-    return data, time_shift
-
-
-# Save everything in radians
-def merge_dfs(onboard, optitrack, sampling_freq):
-    onboard = onboard.rename(
-        columns={col: f"onboard.{col}" for col in onboard.columns if col != "time"}
-    )
-    optitrack = optitrack.rename(
-        columns={col: f"optitrack.{col}" for col in optitrack.columns if col != "time"}
-    )
-
-    # Use merge_asof for nearest time matching
-    merged = pd.merge_asof(
-        onboard.sort_values('time'), 
-        optitrack.sort_values('time'), 
-        on="time", 
-        direction="nearest",
-        tolerance=1/(2*sampling_freq)  # Allow matching within half a sample period
-    )
-    
-    # Remove any rows with NaN (outside tolerance)
-    merged = merged.dropna()
-    
-    # Recreate uniform time array
-    num_samples = len(merged)
-    merged["time"] = np.linspace(0, (num_samples - 1) / sampling_freq, num_samples)
-
-    return merged
-
-
-def remove_gravity(merged, sampling_freq, g0):
+def merge(onboard, states, scale, offset):
     """
-    Converts the onboard specific force from g to m/s^2 and removes gravity using the
-    OptiTrack attitude, then integrates the result to get the onboard velocity.
+    Combines the onboard and mocap data on a uniform OUTPUT_RATE grid, over the time
+    both were recording. Each grid point takes the nearest onboard sample, unchanged,
+    and the mocap states interpolated from the mocap frames.
     """
-    roll = merged["optitrack.roll"]
-    pitch = merged["optitrack.pitch"]
+    t_onboard = (onboard["timestamp"].to_numpy() - onboard["timestamp"].iloc[0]) / 1000
+    t_onboard = scale * t_onboard + offset
+    t_mocap = states["time"].to_numpy()
 
-    merged["onboard.acc.x"] = merged["onboard.acc.x"] * g0 - np.sin(pitch) * g0
-    merged["onboard.acc.y"] = merged["onboard.acc.y"] * g0 + np.sin(roll) * np.cos(pitch) * g0
-    merged["onboard.acc.z"] = merged["onboard.acc.z"] * g0 + np.cos(pitch) * np.cos(roll) * g0
+    start = max(t_onboard[0], t_mocap[0])
+    end = min(t_onboard[-1], t_mocap[-1])
+    grid = start + np.arange(int((end - start) * OUTPUT_RATE) + 1) / OUTPUT_RATE
 
-    # translational velocity, placed before the accelerations
-    loc = merged.columns.get_loc("onboard.acc.x")
-    for i, axis in enumerate(("x", "y", "z")):
-        vel = cumulative_trapezoid(merged[f"onboard.acc.{axis}"], dx=1 / sampling_freq, initial=0)
-        merged.insert(loc + i, f"onboard.vel.{axis}", vel)
+    # Nearest onboard sample
+    idx = np.clip(np.searchsorted(t_onboard, grid), 1, len(t_onboard) - 1)
+    idx -= grid - t_onboard[idx - 1] < t_onboard[idx] - grid
+    merged = onboard.iloc[idx].reset_index(drop=True).add_prefix("onboard.")
+    merged.insert(0, "time", np.arange(len(grid)) / OUTPUT_RATE)
 
-    return merged
+    cols = POS + QUAT + VEL_NED + VEL_FRD + RATES
+    mocap = pd.DataFrame(CubicSpline(t_mocap, states[cols].to_numpy())(grid), columns=cols)
+    quat = mocap[QUAT].to_numpy()
+    mocap[QUAT] = quat / np.linalg.norm(quat, axis=1, keepdims=True)
+    yaw, pitch, roll = R.from_quat(mocap[QUAT].to_numpy(), scalar_first=True).as_euler("ZYX").T
+    mocap[EULER] = np.column_stack([roll, pitch, yaw])
 
+    gap = np.interp(grid, t_mocap, states["gap"].astype(float)) > 0
+    mocap.loc[gap] = np.nan
 
-def orient_onboard(data, sampling_freq, time_shift):
-    """
-    Orients the onboard logged data to the aerospace standard convention,
-    all the angles and setpoints are converted to radians to keep consistency with the outputs from the open loop equations of motion
-    """
-
-    oriented_data = pd.DataFrame(
-        {
-            "controller.pitch": data["controller.pitch"],
-            "controller.roll": data["controller.roll"],
-            "controller.yaw": data["controller.yaw"],
-            "controller.pitchRate": data["controller.pitchRate"],
-            "controller.rollRate": data["controller.rollRate"],
-            "controller.yawRate": data["controller.yawRate"],
-            "controller.cmd_pitch": data["controller.cmd_pitch"],
-            "controller.cmd_roll": data["controller.cmd_roll"],
-            "controller.cmd_yaw": data["controller.cmd_yaw"],
-            "controller.cmd_thrust": data["controller.cmd_thrust"],
-            "motor.m1": data["motor.m1"],
-            "motor.m2": data["motor.m2"],
-            "motor.m3": data["motor.m3"],
-            "motor.m4": data["motor.m4"],
-            "p": data["p"],
-            "q": -data["q"],
-            "r": -data["r"],
-            "acc.x": -data["acc.x"],
-            "acc.y": data["acc.y"],
-            "acc.z": data["acc.z"],
-        }
-    )
-
-    time_array = np.arange(0, len(oriented_data) / sampling_freq, 1 / sampling_freq)
-
-    idx = np.argmin(np.abs(time_array - time_shift))
-
-    oriented_data = oriented_data.iloc[idx:, :]
-
-    time_array =  np.arange(0, len(oriented_data) / sampling_freq, 1 / sampling_freq)
+    mocap = mocap[POS + QUAT + EULER + VEL_NED + VEL_FRD + RATES].add_prefix("optitrack.")
+    return pd.concat([merged, mocap], axis=1)
 
 
-    oriented_data.insert(0, "time", time_array)
+def process(cfg):
+    if not cfg.mocap_cutoff_hz < OUTPUT_RATE / 2:
+        raise ValueError(f"mocap_cutoff_hz must be below {OUTPUT_RATE / 2} Hz")
 
-    return oriented_data
+    onboard = pd.read_csv(cfg.onboard_path)
+    mocap, fps = data_loader.read_mocap(cfg.mocap_path, cfg.rigid_body)
+    print(f"Onboard: {cfg.onboard_path}, {len(onboard)} samples")
+    print(f"Mocap:   {cfg.mocap_path}, {len(mocap)} frames at {fps:g} Hz")
 
+    states = mocap_states(mocap, fps, cfg.mocap_cutoff_hz)
 
-def optitrack_pipeline(data, filter_freq, CoM_vector, optitrack_path, wing_marker_right=2, wing_marker_left=3, yaw_offset=0.0):
+    if cfg.clock_scale is not None and cfg.time_offset is not None:
+        scale, offset = cfg.clock_scale, cfg.time_offset
+        print("Sync from flights.yaml")
+    else:
+        scale, offset = sync(onboard, states, cfg.mocap_cutoff_hz)
 
-    print("Processing the Optitrack data ...")
+    rate = 1 / (scale * np.mean(np.diff(onboard["timestamp"])) / 1000)
+    corr = sync_quality(onboard, states, scale, offset)
+    print(f"Sync: mocap time = {scale:.5f} * onboard time + {offset:.3f} s (onboard log at {rate:.2f} Hz)")
+    print(f"Gyro vs mocap rates correlation while flying: p {corr[0]:.2f}, q {corr[1]:.2f}, r {corr[2]:.2f}")
+    if np.mean(corr) < 0.5:
+        print("Warning: poor correlation, check the sync")
 
-    # Get Optitrack meta data
-    optitrack_meta = get_optitrack_meta(optitrack_path)
-    optitrack_fps = int(float(optitrack_meta["Capture Frame Rate"]))
-
-    # Handle NaNs in both dataframes
-    optitrack_data_nonan = handle_nan(data, optitrack_fps, 2)
-
-    optitrack_freq_dihedral = process_frequency_dihedral(optitrack_data_nonan, optitrack_fps, wing_marker_right, wing_marker_left, yaw_offset)
-
-    optitrack_freq_dihedral = filter_data(
-        optitrack_freq_dihedral, filter_freq, optitrack_fps
-    ).iloc[:, 1:]
-
-
-    # Filtering
-    optitrack_filtered = filter_data(
-        optitrack_data_nonan, 1, optitrack_fps
-    )
-
-    print("Computing states in body coordinates ...")
-    # Process the optitrack data
-    optitrack_processed = process_optitrack(optitrack_filtered, CoM_vector, optitrack_fps)
-
-    output = pd.concat([optitrack_processed, optitrack_freq_dihedral], axis=1)
-
-    print("Processing of the Optitrack data completed.")
-
-    return optitrack_fps, output
-
-def onboard_pipeline(data, freq, filter_freq, optitrack_freq):
-
-    print("Processing the Optitrack data ...")
-    # Handle NaNs in both dataframes
-    onboard_data_nonan = handle_nan(data, onboard_freq, 2)
-
-    # Filtering
-    onboard_filtered = filter_data(onboard_data_nonan, filter_freq, freq)
-
-    print("Orienting the IMU data")
-    # Process the filtered onboard data
-    onboard_processed = process_onboard(onboard_filtered, freq)
-
-    print(f"Resampling down the IMU data from {freq} Hz to the Optitrack frame rate of {optitrack_freq} Hz")
-    # Resample the onboard data down to optitrack_fps
-    onboard_sampled = resample_data(onboard_processed, optitrack_freq, freq, freq)
-
-    print("Processing of the Onboard data completed.")
-    return onboard_sampled
-
-def sync_dataframes(onboard, optitrack, optitrack_fps, cols_sync):
-    print("Combine the data")
-
-    # Match the data
-    lag = find_lag(onboard, optitrack, cols_sync)
-
-    # Shift the optitrack data
-    optitrack_processed_shifted, time_shift = shift_data(
-        optitrack_processed, lag, optitrack_fps
-    )
-
-    # Merge synced DataFrames
-    processed_merged = merge_dfs(
-        onboard_processed, optitrack_processed_shifted, optitrack_fps
-    )
-
-    # After calculating lag
-    print(f"Lag: {lag} samples = {lag/optitrack_fps:.3f} seconds")
-
-    return processed_merged
+    processed = merge(onboard, states, scale, offset)
+    os.makedirs(os.path.dirname(cfg.processed_path), exist_ok=True)
+    processed.to_csv(cfg.processed_path, index=False)
+    print(f"Saved {len(processed)} rows ({len(processed) / OUTPUT_RATE:.1f} s) to {cfg.processed_path}")
 
 
 if __name__ == "__main__":
-
-    parser = argparse.ArgumentParser(description="Process flapper flight data")
-    parser.add_argument(
-        "flight",
-        nargs="?",
-        default="hover1",
-        help="Flight experiment name (e.g. hover1, climb2, lateral1)",
-    )
+    parser = argparse.ArgumentParser(description="Sync and merge the onboard and mocap data of a flight")
+    parser.add_argument("flights", nargs="*", help="Flights from flights.yaml (default: all)")
     args = parser.parse_args()
-    cfg = data_loader.load(args.flight)
-    
-    # OptiTrack z,x,y --> x,y,z
 
-    onboard_freq = 200  # Hz
-    filter_cutoff_freq = 6  # Hz
-    g0 = 9.80665  # m/s
-
-    # Columns to use to sync the optitrack and IMU data
-    columns_sync = ["p", "q", "r"]
-    show = False
-
-    body_to_CoM = np.array([+0.001, 0.0, -0.13])
-
-    # Read the .csv file into a pandas df
-    optitrack_data = pd.read_csv(
-        cfg.optitrack_path,
-        skiprows=7,
-        usecols=range(1, len(cfg.optitrack_cols) + 1),
-        names=cfg.optitrack_cols,
-        header=None,
-    )
-
-    onboard_data = pd.read_csv(cfg.onboard_path)
-
-    optitrack_fps, optitrack_processed = optitrack_pipeline(optitrack_data, filter_cutoff_freq, body_to_CoM, cfg.optitrack_path, cfg.wing_marker_right, cfg.wing_marker_left, cfg.yaw_offset)
-
-    onboard_processed = onboard_pipeline(onboard_data, onboard_freq, filter_cutoff_freq, optitrack_fps)
-
-    processed_merged = sync_dataframes(onboard_processed, optitrack_processed, optitrack_fps, columns_sync)
-
-    processed_merged = remove_gravity(processed_merged, optitrack_fps, g0)
-
-
-    # Save merged DataFrame
-    os.makedirs(os.path.dirname(cfg.processed_path), exist_ok=True)
-    processed_merged.to_csv(f"{cfg.processed_path}{cfg.flight_exp}-processed.csv", index=False)
-
-    print("Processed data saved at", f"{cfg.processed_path}{cfg.flight_exp}-processed.csv")
-    # # Process the onboard data at 500 Hz
-    # onboard_data = pd.read_csv(onboard_csv, header=0, names=names_onboard)
-    # oriented_data = orient_onboard(onboard_data, onboard_freq, time_shift)
-    # oriented_data.to_csv(
-    #     f"{processed_dir}/{flight_exp}_oriented_onboard.csv", index=False
-    # )
-
-    # Plot to verify
-    if show:
-        fig, axes = plt.subplots(5, 1, figsize=(18, 10))
-
-        # After shifting
-        axes[0].plot(processed_merged["time"], processed_merged["onboard.acc.x"], label="Onboard")
-        axes[0].plot(processed_merged["time"], processed_merged["optitrack.acc.x"], label="OptiTrack (shifted)")
-        axes[0].legend()
-        axes[0].set_ylim([-2, 2])
-        axes[0].set_title("acc x")
-
-        axes[1].plot(processed_merged["time"], processed_merged["onboard.q"], label="Onboard")
-        axes[1].plot(processed_merged["time"], processed_merged["optitrack.q"], label="OptiTrack (shifted)")
-        axes[1].legend()
-        axes[1].set_title("acc y")
-
-        axes[2].plot(processed_merged["time"], processed_merged["onboard.acc.z"], label="Onboard")
-        axes[2].plot(processed_merged["time"], processed_merged["optitrack.acc.z"], label="OptiTrack (shifted)")
-        axes[2].legend()
-        axes[2].set_title("acc z")
-
-        axes[3].plot(processed_merged["time"], processed_merged["optitrack.dihedral.right"], label="Right")
-        axes[3].plot(processed_merged["time"], processed_merged["optitrack.dihedral.left"], label="Left")
-        axes[3].set_ylim([-.25, .25])
-        axes[3].legend()
-        axes[3].set_title("dihedral")
-
-        axes[4].plot(processed_merged["time"], processed_merged["onboard.r"], label="Onboard")
-        axes[4].plot(processed_merged["time"], processed_merged["optitrack.r"], label="OptiTrack")
-        axes[4].set_ylim([-.25, .25])
-        axes[4].legend()
-        axes[4].set_title("yaw rate")
-
-        plt.tight_layout()
-        plt.show()
-
-
-
-
-
-
+    for flight in args.flights or data_loader.flights():
+        print(f"=== {flight}")
+        process(data_loader.load(flight))
