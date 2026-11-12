@@ -4,11 +4,14 @@ Collection of scripts to process data captured with a Flapper Drone: the onboard
 ## Setup and usage
 
 ```bash
-uv sync                               # create the environment
-./run.sh process lateral1_rl          # process one flight
-./run.sh process-all                  # process every flight in flights.yaml
-./run.sh rerun lateral1_rl            # replay the mocap of a flight in the Rerun viewer
-./run.sh rerun lateral1_rl --processed  # replay the processed flight instead
+uv sync                                                    # create the environment
+uv run src/flapper_data/data_loader.py                     # list the flights in flights.yaml
+uv run src/flapper_data/process_data.py lateral1_rl        # process one flight (no flight: all of them)
+uv run src/flapper_data/rerun_visuals.py lateral1_rl       # replay the mocap of a flight in the Rerun viewer
+uv run src/flapper_data/rerun_visuals.py lateral1_rl --processed  # replay the processed flight instead
+uv run src/flapper_data/utils/write_to_csv.py data/bin --outdir data/onboard  # decode the uSD-card logs in a directory to csv
+uv run src/flapper_data/utils/plot_onboard.py data/onboard/rllog07.csv        # plot the signals of onboard log csvs
+uv run src/flapper_data/utils/plot_rl.py data/onboard/rllog07.csv             # plot RL-controller flight logs
 ```
 
 Run everything from the repository root: the data paths are relative to the current directory.
@@ -36,7 +39,9 @@ data/                                 # not tracked by git
 | `src/flapper_data/process_data.py` | Main pipeline, described below. |
 | `src/flapper_data/rerun_visuals.py` | Replays a flight in the [Rerun](https://rerun.io) viewer. From the raw mocap: body markers, body axes and position, plus the wing markers, dihedral angle and flapping frequency when the wing rigid bodies were recorded (`FlapperLeftWing`/`FlapperRightWing`, older recordings only). With `--processed`: body pose and trajectory, onboard gyro vs OptiTrack body rates, attitude, position and velocity. |
 | `src/flapper_data/data_loader.py` | Reads `flights.yaml`, and the rigid-body pose and markers from the Motive export. Run it to list the flights. |
-| `run.sh` | Shortcut for running the modules above. |
+| `src/flapper_data/utils/write_to_csv.py` | Decodes every Crazyflie uSD-card binary log in a directory (recognised by the format's magic byte) to `<log>.csv`, using `cfusdlog.py`. Existing csvs are skipped. |
+| `src/flapper_data/utils/plot_onboard.py` | Plots all signals of onboard log csvs. |
+| `src/flapper_data/utils/plot_rl.py` | Plots RL-controller flight log csvs in the `flapper_rl` sim frame, with the fig8 gate crossings and the window where the NN is in control. |
 
 ## Processing
 
