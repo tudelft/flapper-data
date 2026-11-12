@@ -5,7 +5,7 @@ import rerun.blueprint as rrb
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 import argparse
-from flapper_data.data_loader import load
+from flapper_data.data_loader import load, read_mocap_markers
 
 # Frame definition: x forward, y left, z up
 # OptiTrack z,x,y --> x,y,z, switch also for quaternions
@@ -54,7 +54,7 @@ class FlapperLogger:
     Parameters
     ----------
     df : pd.DataFrame
-        Flight data (raw OptiTrack or processed).
+        Raw OptiTrack data, as returned by data_loader.read_mocap_markers.
     marker_radius, line_radius, axes_radius : float
         Visual sizes for points, lines, and axes.
     show_body, show_wings, show_axes, show_dihedral, show_position : bool
@@ -68,10 +68,10 @@ class FlapperLogger:
     BLUEPRINT = rrb.Blueprint(
         rrb.Vertical(
             rrb.Spatial3DView(origin="/flapper/", name="flapper"),
-            rrb.TimeSeriesView(origin="/dihedral/", name="dihedral", visible=True),
+            rrb.TimeSeriesView(origin="/dihedral/", name="dihedral", visible=False),
             rrb.TimeSeriesView(origin="/rotations/", name="rotations", visible=False),
             rrb.TimeSeriesView(origin="/frequency/", name="frequency", visible=False),
-            rrb.TimeSeriesView(origin="/position/", name="position", visible=False),
+            rrb.TimeSeriesView(origin="/position/", name="position", visible=True),
             rrb.TimeSeriesView(origin="/accelerations/", name="accelerations", visible=False),
         ),
         collapse_panels=False,
@@ -133,8 +133,11 @@ class FlapperLogger:
             1 for c in df.columns if re.match(rf"^{re.escape(prefix)}fb\d+x$", c)
         )
 
+        # The wing layers need the wing rigid bodies, which only older recordings have
+        self._has_wings = any(c.startswith(f"{prefix}fblw") for c in df.columns)
+
         # Pre-compute per-wing dihedral offsets from initial window
-        self._dihedral_offsets = self._calculate_dihedral_offset()
+        self._dihedral_offsets = self._calculate_dihedral_offset() if self._has_wings else {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -142,13 +145,13 @@ class FlapperLogger:
 
     def update(self, i: int) -> None:
         """Log all enabled layers for timestep *i*."""
-        rr.set_time("time", timestamp=self.df["time"].iloc[i])
+        rr.set_time("time", duration=self.df["time"].iloc[i])
 
         if self.show_body:
             self._log_body_markers(i)
             self._log_body_strips(i)
 
-        if self.show_wings:
+        if self.show_wings and self._has_wings:
             for wing in ("right", "left"):
                 self._log_wing_markers(i, wing)
                 self._log_wing_strips(i, wing)
@@ -156,7 +159,7 @@ class FlapperLogger:
         if self.show_axes:
             self._log_body_axes(i)
 
-        if self.show_dihedral:
+        if self.show_dihedral and self._has_wings:
             self._log_dihedral_frequency(i)
             self._log_dihedral(i)
 
@@ -190,18 +193,14 @@ class FlapperLogger:
     def _log_body_strips(self, i: int) -> None:
         p = self.prefix
         fb = _pt(self.df, "fb", i, p)
-        pts = {n: _pt(self.df, f"fb{n}", i, p) for n in range(1, 6)}
 
+        # Connect every marker to the rigid-body pivot
         rr.log(
             "/flapper/fb_body_strips",
             rr.LineStrips3D(
-                [
-                    [pts[1], fb, pts[2], pts[3], pts[5], pts[4], pts[2]],
-                    [pts[3], fb, pts[4]],
-                    [pts[5], fb],
-                ],
-                radii=[self.line_radius, self.line_radius],
-                colors=[[0, 255, 0], [0, 255, 0]],
+                [[fb, _pt(self.df, f"fb{n}", i, p)] for n in range(1, self._n_body_markers + 1)],
+                radii=[self.line_radius],
+                colors=[[0, 255, 0]],
             ),
         )
 
@@ -401,15 +400,65 @@ class FlapperLogger:
                 )
                 if freq is not None:
                     rr.log(f"/frequency/frequency_{label}", rr.Scalars(freq))
-    
+
+
+PROCESSED_BLUEPRINT = rrb.Blueprint(
+    rrb.Horizontal(
+        rrb.Spatial3DView(origin="/flapper/", name="flapper"),
+        rrb.Vertical(
+            rrb.TimeSeriesView(origin="/rates/", name="body rates FRD [rad/s]"),
+            rrb.TimeSeriesView(origin="/attitude/", name="attitude [rad]"),
+            rrb.TimeSeriesView(origin="/position/", name="position NED [m]"),
+            rrb.TimeSeriesView(origin="/velocity/", name="velocity NED [m/s]", visible=False),
+        ),
+    ),
+    collapse_panels=False,
+)
+
+
+def log_processed(df: pd.DataFrame) -> None:
+    """Log a processed flight: the body pose in 3D and the onboard and OptiTrack time series."""
+    time = rr.TimeColumn("time", duration=df["time"])
+
+    def series(path, values):
+        rr.send_columns(path, indexes=[time], columns=rr.Scalars.columns(scalars=values))
+
+    # The gyro and locSrv are in x forward, y left, z up
+    gyro = np.radians(df[["onboard.gyro.x", "onboard.gyro.y", "onboard.gyro.z"]].to_numpy()) * [1, -1, -1]
+    loc = df[["onboard.locSrv.x", "onboard.locSrv.y", "onboard.locSrv.z"]].to_numpy() * [1, -1, -1]
+
+    for i, axis in enumerate(("p", "q", "r")):
+        series(f"/rates/{axis}/onboard", gyro[:, i])
+        series(f"/rates/{axis}/optitrack", df[f"optitrack.frd.{axis}"])
+    for angle in ("roll", "pitch", "yaw"):
+        series(f"/attitude/{angle}", df[f"optitrack.ned.{angle}"])
+    for i, axis in enumerate(("x", "y", "z")):
+        series(f"/position/{axis}/locSrv", loc[:, i])
+        series(f"/position/{axis}/optitrack", df[f"optitrack.ned.{axis}"])
+        series(f"/velocity/{axis}", df[f"optitrack.ned.vel{axis}"])
+
+    # Body pose in a NED world
+    tracked = df["optitrack.ned.x"].notna()
+    pos = df.loc[tracked, ["optitrack.ned.x", "optitrack.ned.y", "optitrack.ned.z"]].to_numpy()
+    quat = df.loc[tracked, ["optitrack.ned.qx", "optitrack.ned.qy", "optitrack.ned.qz", "optitrack.ned.qw"]].to_numpy()
+
+    rr.log("/flapper", rr.ViewCoordinates.FRD, static=True)
+    rr.log("/flapper/trajectory", rr.LineStrips3D([pos], radii=0.002, colors=[128, 128, 128]), static=True)
+    rr.log(
+        "/flapper/body",
+        rr.Arrows3D(vectors=np.eye(3) * 0.2, colors=[[255, 0, 0], [0, 255, 0], [0, 0, 255]], radii=0.005),
+        static=True,
+    )
+    rr.send_columns(
+        "/flapper/body",
+        indexes=[rr.TimeColumn("time", duration=df.loc[tracked, "time"])],
+        columns=rr.Transform3D.columns(translation=pos, quaternion=quat),
+    )
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Rerun visuals for flapper flight data")
-    parser.add_argument(
-        "flight",
-        nargs="?",
-        default="hover1",
-        help="Flight experiment name (e.g. hover1, climb2, lateral1)",
-    )
+    parser.add_argument("flight", help="Flight from flights.yaml")
     parser.add_argument(
         "--processed",
         action="store_true",
@@ -420,34 +469,24 @@ if __name__ == "__main__":
 
     cfg = load(args.flight)
 
+    rr.init("Rerun_Flapper", spawn=True)
+
     if args.processed:
-        df = pd.read_csv(f"{cfg.processed_path}{cfg.flight_exp}-processed.csv")
-        prefix = "optitrack."
+        rr.send_blueprint(PROCESSED_BLUEPRINT)
+        log_processed(pd.read_csv(cfg.processed_path))
     else:
-        prefix = ""
-        df = pd.read_csv(
-            cfg.optitrack_path,
-            skiprows=7,
-            usecols=range(1, len(cfg.optitrack_cols) + 1),
-            names=cfg.optitrack_cols,
-            header=None,
+        df, fps = read_mocap_markers(cfg.mocap_path, cfg.rigid_body)
+        rr.send_blueprint(FlapperLogger.BLUEPRINT)
+
+        logger = FlapperLogger(
+            df,
+            sample_rate=int(fps),
+            show_body=True,
+            show_wings=True,
+            show_axes=True,
+            show_dihedral=True,
+            show_position=True,
         )
 
-    rr.init("Rerun_Flapper", spawn=True)
-    rr.send_blueprint(FlapperLogger.BLUEPRINT)
-
-    logger = FlapperLogger(
-        df,
-        prefix=prefix,
-        yaw_offset=cfg.yaw_offset,
-        wing_marker_right=cfg.wing_marker_right,
-        wing_marker_left=cfg.wing_marker_left,
-        show_body=True,
-        show_wings=True,
-        show_axes=True,
-        show_dihedral=True,
-        show_position=True,
-    )
-
-    for i in range(len(df)):
-        logger.update(i)
+        for i in range(len(df)):
+            logger.update(i)

@@ -1,0 +1,38 @@
+# Pairs each onboard log with the OptiTrack take recorded during the same flight.
+#
+#   onboard   data/onboard/<onboard>.csv   decoded uSD-card log
+#   mocap     data/mocap/<mocap>.csv       Motive CSV export
+#
+# The processed flight is written to data/processed/<flight>.csv.
+#
+# Settings under `defaults` apply to every flight; a flight can override any of them.
+#
+#   rigid_body        Motive rigid body of the drone.
+#   mocap_cutoff_hz   Low-pass applied to the mocap data at 360 Hz before differentiating.
+#                     It must stay below 100 Hz, as it is also the anti-aliasing filter
+#                     for the 200 Hz output.
+#   clock_scale       Optional: skip the automatic sync and use
+#   time_offset         mocap time = clock_scale * onboard time + time_offset  [s]
+#                     where onboard time starts at 0 at the first onboard sample.
+
+defaults:
+  rigid_body: flapper_rl
+  mocap_cutoff_hz: 30
+
+flights:
+  climb1_rl_002:         {onboard: rllog01, mocap: climb1_rl_002}
+  climb1_rl_004:         {onboard: rllog02, mocap: climb1_rl_004}  # ends in a crash
+  longitudinal1_rl:      {onboard: rllog04, mocap: longitudinal1_rl}
+  longitudinal2_rl:      {onboard: rllog05, mocap: longitudinal2_rl}
+  longitudinal3_rl:      {onboard: rllog06, mocap: longitudinal3_rl}
+  lateral1_rl:           {onboard: rllog07, mocap: lateral1_rl}
+  lateral3_fast_rl:      {onboard: rllog09, mocap: lateral3_fast_rl}
+  lateral4_fast_rl_001:  {onboard: rllog10, mocap: lateral4_fast_rl_001}
+  lateral5_rl:           {onboard: rllog11, mocap: lateral5_rl}
+  lateral6_rl:           {onboard: rllog12, mocap: lateral6_rl}
+  longitudinal1_rl_nice: {onboard: rllog13, mocap: longitudinal1_rl_nice}
+
+# Onboard logs without a take of their flight:
+#   rllog00  climb1_rl only covers the first 8 s, with the drone still on the ground
+#   rllog03  ~2 s flight, no take
+#   rllog08  flight between lateral1_rl and lateral3_fast_rl, no take
